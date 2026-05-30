@@ -18,6 +18,7 @@ type Handlers struct {
 	Currencies *application.CurrencyService
 	Categories domain.CategoryRepository
 	Orders     domain.OrderRepository
+	Tickets    *application.TicketService
 }
 
 // --- Público ---
@@ -110,6 +111,143 @@ func (h *Handlers) UserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, res)
+}
+
+// --- Tickets do usuário (loja) --- //
+
+func (h *Handlers) MeListTickets(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	list, err := h.Tickets.ListForUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+func (h *Handlers) MeCreateTicket(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Subject string  `json:"subject"`
+		Body    string  `json:"body"`
+		OrderID *string `json:"order_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	t, err := h.Tickets.Open(r.Context(), application.OpenTicketInput{
+		UserID: userID, Subject: body.Subject, Body: body.Body, OrderID: body.OrderID,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusCreated, t)
+}
+
+func (h *Handlers) MeGetTicket(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	d, err := h.Tickets.GetForUser(r.Context(), chi.URLParam(r, "id"), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, d)
+}
+
+func (h *Handlers) MeReplyTicket(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Tickets.ReplyAsUser(r.Context(), chi.URLParam(r, "id"), userID, body.Body); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Tickets (admin) --- //
+
+func (h *Handlers) AdminListTickets(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	list, err := h.Tickets.AdminList(r.Context(), status)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+func (h *Handlers) AdminGetTicket(w http.ResponseWriter, r *http.Request) {
+	d, err := h.Tickets.AdminGet(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, d)
+}
+
+func (h *Handlers) AdminReplyTicket(w http.ResponseWriter, r *http.Request) {
+	p, _ := principalFromContext(r.Context())
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Tickets.ReplyAsAdmin(r.Context(), chi.URLParam(r, "id"), p.AdminID, body.Body); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) AdminUpdateTicket(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Status   *string `json:"status,omitempty"`
+		Priority *string `json:"priority,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if body.Status != nil {
+		if err := h.Tickets.AdminUpdateStatus(r.Context(), id, domain.TicketStatus(*body.Status)); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	if body.Priority != nil {
+		if err := h.Tickets.AdminUpdatePriority(r.Context(), id, domain.TicketPriority(*body.Priority)); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) MeOrders(w http.ResponseWriter, r *http.Request) {

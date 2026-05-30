@@ -34,17 +34,21 @@ func seedRoles(ctx context.Context, db *DB) error {
 	}{
 		{"superadmin", "Super Admin", []string{
 			"plans:read", "plans:write", "gateways:read", "gateways:write",
-			"currencies:read", "currencies:write", "orders:read", "admins:manage",
+			"currencies:read", "currencies:write", "orders:read",
+			"tickets:read", "tickets:write", "admins:manage",
 		}},
 		{"manager", "Gerente", []string{
 			"plans:read", "plans:write", "gateways:read", "gateways:write",
 			"currencies:read", "currencies:write", "orders:read",
+			"tickets:read", "tickets:write",
 		}},
 		{"support", "Suporte", []string{
 			"plans:read", "gateways:read", "currencies:read", "orders:read",
+			"tickets:read", "tickets:write",
 		}},
 		{"viewer", "Leitura", []string{
 			"plans:read", "gateways:read", "currencies:read", "orders:read",
+			"tickets:read",
 		}},
 	}
 	for _, r := range roles {
@@ -72,6 +76,12 @@ func seedCategories(ctx context.Context, db *DB) error {
 		{"seguidores", "Seguidores", 1},
 		{"engajamento", "Engajamento", 2},
 		{"visualizacoes", "Visualizações", 3},
+		{"curtidas", "Curtidas", 5},
+		{"comentarios", "Comentários", 6},
+		{"compartilhamentos", "Compartilhamentos", 7},
+		{"salvamentos", "Salvamentos", 8},
+		{"reels", "Reels", 9},
+		{"stories", "Stories", 10},
 		{"servicos", "Serviços", 4},
 	}
 	for _, c := range cats {
@@ -128,18 +138,74 @@ func seedPlans(ctx context.Context, db *DB) error {
 		brl                  float64
 		order                int
 	}{
+		// ----- Seguidores (ladder do cliente) -----
 		{"100 seguidores", "Ideal para testar", "seguidores", 100, 9.90, 1},
 		{"250 seguidores", "Primeiro impulso", "seguidores", 250, 18.90, 2},
 		{"500 seguidores", "Crescimento inicial", "seguidores", 500, 35.90, 3},
 		{"1.000 seguidores", "Mais alcance", "seguidores", 1000, 69.90, 4},
-		{"10.000 seguidores", "Escala", "seguidores", 10000, 399.90, 5},
-		{"100.000 seguidores", "Autoridade", "seguidores", 100000, 3199.90, 6},
-		{"1.000.000 seguidores", "Máximo alcance", "seguidores", 1000000, 11999.99, 7},
-		{"Curtidas 1k", "1.000 curtidas distribuídas", "engajamento", 1000, 14.90, 1},
-		{"Curtidas 5k", "5.000 curtidas + comentários", "engajamento", 5000, 59.90, 2},
-		{"Views 10k", "10.000 visualizações em Reels", "visualizacoes", 10000, 12.90, 1},
-		{"Views 50k", "50.000 visualizações em Reels", "visualizacoes", 50000, 49.90, 2},
-		{"Gestão Mensal", "Gestão de perfil + estratégia", "servicos", 1, 299.90, 1},
+		{"2.500 seguidores", "Tração", "seguidores", 2500, 149.90, 5},
+		{"5.000 seguidores", "Comunidade", "seguidores", 5000, 249.90, 6},
+		{"10.000 seguidores", "Escala", "seguidores", 10000, 399.90, 7},
+		{"25.000 seguidores", "Microinfluência", "seguidores", 25000, 899.90, 8},
+		{"50.000 seguidores", "Influência consolidada", "seguidores", 50000, 1699.90, 9},
+		{"100.000 seguidores", "Autoridade", "seguidores", 100000, 3199.90, 10},
+		{"250.000 seguidores", "Marca pessoal", "seguidores", 250000, 6499.90, 11},
+		{"500.000 seguidores", "Top tier", "seguidores", 500000, 8999.90, 12},
+		{"1.000.000 seguidores", "Máximo alcance", "seguidores", 1000000, 11999.99, 13},
+
+		// ----- Curtidas -----
+		{"100 curtidas", "Boost inicial", "curtidas", 100, 4.90, 1},
+		{"500 curtidas", "Engajamento médio", "curtidas", 500, 14.90, 2},
+		{"1.000 curtidas", "Alta visibilidade", "curtidas", 1000, 24.90, 3},
+		{"5.000 curtidas", "Viralizando", "curtidas", 5000, 89.90, 4},
+		{"10.000 curtidas", "Em alta", "curtidas", 10000, 149.90, 5},
+		{"50.000 curtidas", "Top do feed", "curtidas", 50000, 599.90, 6},
+		{"100.000 curtidas", "Explosão", "curtidas", 100000, 999.90, 7},
+
+		// ----- Comentários -----
+		{"50 comentários", "Conversa inicial", "comentarios", 50, 19.90, 1},
+		{"100 comentários", "Engajamento real", "comentarios", 100, 34.90, 2},
+		{"250 comentários", "Discussão ativa", "comentarios", 250, 79.90, 3},
+		{"500 comentários", "Comunidade", "comentarios", 500, 149.90, 4},
+		{"1.000 comentários", "Viral", "comentarios", 1000, 269.90, 5},
+
+		// ----- Compartilhamentos -----
+		{"100 compartilhamentos", "Espalha a notícia", "compartilhamentos", 100, 12.90, 1},
+		{"500 compartilhamentos", "Reach extra", "compartilhamentos", 500, 49.90, 2},
+		{"1.000 compartilhamentos", "Conteúdo em alta", "compartilhamentos", 1000, 89.90, 3},
+		{"5.000 compartilhamentos", "Viralidade real", "compartilhamentos", 5000, 399.90, 4},
+
+		// ----- Salvamentos -----
+		{"100 salvamentos", "Conteúdo de valor", "salvamentos", 100, 9.90, 1},
+		{"500 salvamentos", "Referência", "salvamentos", 500, 39.90, 2},
+		{"1.000 salvamentos", "Top of mind", "salvamentos", 1000, 69.90, 3},
+		{"5.000 salvamentos", "Conteúdo evergreen", "salvamentos", 5000, 299.90, 4},
+
+		// ----- Reels (visualizações) -----
+		{"1.000 views em Reels", "Pickup inicial", "reels", 1000, 4.90, 1},
+		{"10.000 views em Reels", "Em alta", "reels", 10000, 12.90, 2},
+		{"50.000 views em Reels", "Trending", "reels", 50000, 49.90, 3},
+		{"100.000 views em Reels", "Boom", "reels", 100000, 89.90, 4},
+		{"500.000 views em Reels", "Viral", "reels", 500000, 379.90, 5},
+		{"1.000.000 views em Reels", "Hit nacional", "reels", 1000000, 699.90, 6},
+
+		// ----- Stories (visualizações) -----
+		{"500 views em Stories", "Boost de Stories", "stories", 500, 6.90, 1},
+		{"2.000 views em Stories", "Alta presença", "stories", 2000, 19.90, 2},
+		{"10.000 views em Stories", "Massivo", "stories", 10000, 79.90, 3},
+
+		// ----- Visualizações (legacy bucket) -----
+		{"Views 10k", "10.000 visualizações em posts", "visualizacoes", 10000, 12.90, 1},
+		{"Views 50k", "50.000 visualizações em posts", "visualizacoes", 50000, 49.90, 2},
+
+		// ----- Engajamento combinado (antigo) -----
+		{"Pacote engajamento 1k", "1k curtidas + 50 coments", "engajamento", 1000, 39.90, 1},
+		{"Pacote engajamento 5k", "5k curtidas + 200 coments + 500 shares", "engajamento", 5000, 159.90, 2},
+
+		// ----- Serviços (consultoria) -----
+		{"Auditoria de perfil", "Diagnóstico + recomendações", "servicos", 1, 149.90, 1},
+		{"Gestão Mensal", "Gestão de perfil + estratégia", "servicos", 1, 299.90, 2},
+		{"Lançamento de produto", "Campanha integrada em 30 dias", "servicos", 1, 1499.90, 3},
 	}
 	for _, p := range plans {
 		id := uuid.New().String()
@@ -198,7 +264,10 @@ func seedPlanPrices(ctx context.Context, db *DB, planID string, brl float64) err
 
 func seedGateway(ctx context.Context, db *DB) error {
 	// Idempotente por provider — adiciona o que faltar sem mexer no existente.
-	gws := []struct{ name, provider, config string; active bool }{
+	gws := []struct {
+		name, provider, config string
+		active                 bool
+	}{
 		{"PIX Manual", "manual_pix", `{"pix_key":"contato@viralefy.com"}`, true},
 		{"Woovi (PIX)", "woovi", `{"app_id":"","base_url":"https://api.woovi.com.br"}`, false},
 		{"Heleket (cripto)", "heleket", `{"merchant_id":"","api_key":"","base_url":"https://api.heleket.com","url_callback":""}`, false},

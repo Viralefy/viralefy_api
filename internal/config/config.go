@@ -25,6 +25,8 @@ type Config struct {
 	ResendFrom     string
 	ResendFromName string
 	ResendBaseURL  string
+
+	SiteURL string // URL pública da loja (https://viralefy.com) — usada em e-mails
 }
 
 func Load() (Config, error) {
@@ -54,6 +56,8 @@ func Load() (Config, error) {
 		ResendFrom:     getenv("RESEND_FROM", "onboarding@resend.dev"),
 		ResendFromName: getenv("RESEND_FROM_NAME", "Viralefy"),
 		ResendBaseURL:  getenv("RESEND_BASE_URL", "https://api.resend.com"),
+
+		SiteURL: getenv("SITE_URL", getenv("NEXT_PUBLIC_SITE_URL", "https://viralefy.com")),
 	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")

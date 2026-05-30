@@ -46,6 +46,10 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.
 		r.Route("/me", func(r chi.Router) {
 			r.Use(userAuth)
 			r.Get("/orders", h.MeOrders)
+			r.Get("/tickets", h.MeListTickets)
+			r.Post("/tickets", h.MeCreateTicket)
+			r.Get("/tickets/{id}", h.MeGetTicket)
+			r.Post("/tickets/{id}/messages", h.MeReplyTicket)
 		})
 
 		// Admin — RBAC: cada rota exige uma permissão (após AdminAuth).
@@ -69,6 +73,11 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.
 
 			r.With(RequirePermission(domain.PermCurrenciesRead)).Get("/currencies", h.AdminListCurrencies)
 			r.With(RequirePermission(domain.PermCurrenciesWrite)).Put("/currencies/{code}", h.AdminUpdateCurrency)
+
+			r.With(RequirePermission(domain.PermTicketsRead)).Get("/tickets", h.AdminListTickets)
+			r.With(RequirePermission(domain.PermTicketsRead)).Get("/tickets/{id}", h.AdminGetTicket)
+			r.With(RequirePermission(domain.PermTicketsWrite)).Post("/tickets/{id}/messages", h.AdminReplyTicket)
+			r.With(RequirePermission(domain.PermTicketsWrite)).Patch("/tickets/{id}", h.AdminUpdateTicket)
 		})
 	})
 

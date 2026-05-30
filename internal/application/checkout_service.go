@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strings"
 
@@ -19,6 +18,7 @@ type CheckoutService struct {
 	currencies *CurrencyService
 	email      EmailSender
 	payments   *PaymentRegistry
+	siteURL    string // base URL pública (loja) — usado no e-mail (logo + link de suporte)
 }
 
 func NewCheckoutService(
@@ -29,10 +29,12 @@ func NewCheckoutService(
 	currencies *CurrencyService,
 	email EmailSender,
 	payments *PaymentRegistry,
+	siteURL string,
 ) *CheckoutService {
 	return &CheckoutService{
 		users: users, plans: plans, orders: orders, gateways: gateways,
 		currencies: currencies, email: email, payments: payments,
+		siteURL: siteURL,
 	}
 }
 
@@ -198,43 +200,37 @@ func (s *CheckoutService) sendCheckoutEmail(
 	paymentURL string, paymentExtra map[string]string,
 	password string, accountCreated bool,
 ) bool {
-	payAmount := fmt.Sprintf("%s %s", q.SettlementAmount, q.SettlementCurrency)
-	payInfo := "As instruções de pagamento seguem abaixo."
-	if paymentURL != "" {
-		payInfo = "Pague em: " + paymentURL
-	} else if brCode := paymentExtra["br_code"]; brCode != "" {
-		payInfo = "Código PIX (copia-e-cola):\n" + brCode
-	} else if addr := paymentExtra["address"]; addr != "" {
-		network := paymentExtra["network"]
-		payInfo = fmt.Sprintf("Envie %s para a carteira: %s", payAmount, addr)
-		if network != "" {
-			payInfo += " (rede " + network + ")"
-		}
-	} else if gw != nil {
-		if pixKey := gw.Config["pix_key"]; pixKey != "" && q.SettlementCurrency == "BRL" {
-			payInfo = "Pague via PIX para a chave: " + pixKey
-		}
+	data := CheckoutEmailData{
+		SiteURL:              s.siteURL,
+		Name:                 name,
+		Email:                to,
+		PlanName:             plan.Name,
+		DisplayCurrency:      q.DisplayCurrency,
+		DisplaySymbol:        q.DisplaySymbol,
+		DisplayAmount:        q.DisplayAmount,
+		SettlementCurrency:   q.SettlementCurrency,
+		SettlementAmount:     q.SettlementAmount,
+		AccountCreated:       accountCreated,
+		Password:             password,
+		PaymentURL:           paymentURL,
+		FallbackInstructions: "As instruções de pagamento seguem em breve. Em caso de dúvida, abra um ticket.",
+	}
+	if paymentExtra != nil {
+		data.BrCode = paymentExtra["br_code"]
+		data.QrImage = paymentExtra["qr_code_image"]
+		data.CryptoAddress = paymentExtra["address"]
+		data.CryptoNetwork = paymentExtra["network"]
+	}
+	if data.PixKey == "" && gw != nil && q.SettlementCurrency == "BRL" {
+		data.PixKey = gw.Config["pix_key"]
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Olá, %s!\n\n", name)
-	fmt.Fprintf(&sb, "Recebemos seu pedido do plano \"%s\".\n", plan.Name)
-	fmt.Fprintf(&sb, "Valor: %s %s (cobrança em %s).\n\n", q.DisplaySymbol, q.DisplayAmount, payAmount)
-	if accountCreated {
-		fmt.Fprintf(&sb, "Criamos uma conta para você acompanhar suas compras:\n")
-		fmt.Fprintf(&sb, "  E-mail: %s\n", to)
-		fmt.Fprintf(&sb, "  Senha:  %s\n\n", password)
-		fmt.Fprintf(&sb, "Recomendamos alterar a senha após o primeiro acesso.\n\n")
+	subject, html, text, err := BuildCheckoutEmail(data)
+	if err != nil {
+		log.Printf("checkout: erro renderizando e-mail: %v", err)
+		return false
 	}
-	fmt.Fprintf(&sb, "%s\n", payInfo)
-	text := sb.String()
-
-	subject := "Viralefy — pedido recebido"
-	if accountCreated {
-		subject = "Viralefy — sua conta e seu pedido"
-	}
-
-	if err := s.email.Send(ctx, EmailMessage{To: to, Subject: subject, TextBody: text, HTMLBody: "<pre>" + text + "</pre>"}); err != nil {
+	if err := s.email.Send(ctx, EmailMessage{To: to, Subject: subject, TextBody: text, HTMLBody: html}); err != nil {
 		log.Printf("checkout: falha ao enviar e-mail para %s: %v", to, err)
 		return false
 	}

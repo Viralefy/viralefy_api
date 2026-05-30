@@ -11,6 +11,8 @@ const (
 	PermCurrenciesRead  = "currencies:read"
 	PermCurrenciesWrite = "currencies:write"
 	PermOrdersRead      = "orders:read"
+	PermTicketsRead     = "tickets:read"
+	PermTicketsWrite    = "tickets:write"
 	PermAdminsManage    = "admins:manage"
 )
 
