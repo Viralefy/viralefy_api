@@ -6,16 +6,23 @@ import (
 )
 
 type User struct {
-	ID           string
-	Email        string
-	Name         string
-	Instagram    string
-	PasswordHash string
-	CreatedAt    time.Time
+	ID           string    `json:"id"`
+	Email        string    `json:"email"`
+	Name         string    `json:"name"`
+	Instagram    string    `json:"instagram"`
+	PasswordHash string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// UserView é o user enriquecido com saldo (para listagens no admin).
+type UserView struct {
+	User
+	BalanceCents int64 `json:"balance_cents"`
 }
 
 type UserRepository interface {
 	Create(ctx context.Context, u User) error
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByID(ctx context.Context, id string) (*User, error)
+	ListWithCreditBalance(ctx context.Context, limit int) ([]UserView, error)
 }

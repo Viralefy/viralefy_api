@@ -79,20 +79,23 @@ func main() {
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
 	ticketSvc := application.NewTicketService(ticketRepo, userRepo, emailSender, cfg.SiteURL)
+	paymentReceiver := application.NewPaymentReceiver(invoiceRepo, orderRepo, invoiceSvc)
 
 	h := &httphandler.Handlers{
-		Plans:      planSvc,
-		Checkout:   checkoutSvc,
-		Gateways:   gwSvc,
-		Auth:       authSvc,
-		UserAuth:   userAuthSvc,
-		Currencies: currencySvc,
-		Categories: categoryRepo,
-		Orders:     orderRepo,
-		Tickets:    ticketSvc,
-		Profiles:   profileSvc,
-		Credits:    creditSvc,
-		Invoices:   invoiceSvc,
+		Plans:           planSvc,
+		Checkout:        checkoutSvc,
+		Gateways:        gwSvc,
+		Auth:            authSvc,
+		UserAuth:        userAuthSvc,
+		Currencies:      currencySvc,
+		Categories:      categoryRepo,
+		Orders:          orderRepo,
+		Users:           userRepo,
+		Tickets:         ticketSvc,
+		Profiles:        profileSvc,
+		Credits:         creditSvc,
+		Invoices:        invoiceSvc,
+		PaymentReceiver: paymentReceiver,
 	}
 
 	router := httphandler.NewRouter(h, cfg.CORSOrigins,

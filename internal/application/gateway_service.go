@@ -19,6 +19,12 @@ func (s *GatewayService) List(ctx context.Context) ([]domain.PaymentGateway, err
 	return s.repo.ListAll(ctx)
 }
 
+// GetActiveByProvider expõe lookup do gateway ativo de um provider.
+// Usado pelos handlers de webhook para pegar a config (webhook_secret/api_key).
+func (s *GatewayService) GetActiveByProvider(ctx context.Context, provider string) (*domain.PaymentGateway, error) {
+	return s.repo.GetActiveByProvider(ctx, provider)
+}
+
 type CreateGatewayInput struct {
 	Name     string
 	Provider string

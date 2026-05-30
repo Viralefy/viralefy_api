@@ -40,3 +40,30 @@ func (r *UserRepo) GetByID(ctx context.Context, id string) (*domain.User, error)
 	}
 	return &u, err
 }
+
+// ListWithCreditBalance — usado pelo backoffice. LEFT JOIN no credit_accounts
+// (saldo 0 quando o usuário ainda não fez recarga).
+func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]domain.UserView, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := r.db.pool.Query(ctx, `
+		SELECT u.id, u.email, u.name, u.instagram, u.created_at,
+		       COALESCE(c.balance_cents, 0)
+		FROM users u
+		LEFT JOIN credit_accounts c ON c.user_id = u.id
+		ORDER BY u.created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []domain.UserView{}
+	for rows.Next() {
+		var v domain.UserView
+		if err := rows.Scan(&v.ID, &v.Email, &v.Name, &v.Instagram, &v.CreatedAt, &v.BalanceCents); err != nil {
+			return nil, err
+		}
+		list = append(list, v)
+	}
+	return list, rows.Err()
+}

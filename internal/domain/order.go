@@ -48,6 +48,7 @@ type OrderView struct {
 type OrderRepository interface {
 	Create(ctx context.Context, o Order) error
 	GetByID(ctx context.Context, id string) (*Order, error)
+	GetByExternalRef(ctx context.Context, externalRef string) (*Order, error)
 	ListByUser(ctx context.Context, userID string) ([]Order, error)
 	ListViewByUser(ctx context.Context, userID string) ([]OrderView, error)
 	ListAll(ctx context.Context) ([]Order, error)

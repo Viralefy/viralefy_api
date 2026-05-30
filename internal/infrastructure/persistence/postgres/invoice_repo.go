@@ -39,6 +39,11 @@ func (r *InvoiceRepo) GetByID(ctx context.Context, id string) (*domain.Invoice, 
 	return scanInvoice(row)
 }
 
+func (r *InvoiceRepo) GetByExternalRef(ctx context.Context, ref string) (*domain.Invoice, error) {
+	row := r.db.pool.QueryRow(ctx, `SELECT `+invoiceCols+` FROM invoices WHERE external_ref=$1 LIMIT 1`, ref)
+	return scanInvoice(row)
+}
+
 func (r *InvoiceRepo) ListByUser(ctx context.Context, userID string) ([]domain.Invoice, error) {
 	rows, err := r.db.pool.Query(ctx, `SELECT `+invoiceCols+`
 		FROM invoices WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200`, userID)

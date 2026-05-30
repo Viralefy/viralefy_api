@@ -38,6 +38,7 @@ type Invoice struct {
 type InvoiceRepository interface {
 	Create(ctx context.Context, inv Invoice) error
 	GetByID(ctx context.Context, id string) (*Invoice, error)
+	GetByExternalRef(ctx context.Context, externalRef string) (*Invoice, error)
 	ListByUser(ctx context.Context, userID string) ([]Invoice, error)
 	ListAll(ctx context.Context, statusFilter string) ([]Invoice, error)
 	UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error

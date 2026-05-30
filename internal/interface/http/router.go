@@ -37,6 +37,10 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth, optionalU
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(optionalUserAuth).Post("/checkout", h.CreateCheckout)
 
+		// Webhooks dos providers (sem auth — assinatura é validada no handler).
+		r.Post("/webhooks/woovi", h.WooviWebhook)
+		r.Post("/webhooks/heleket", h.HeleketWebhook)
+
 		// Auth admin (backoffice)
 		r.Post("/auth/login", h.AdminLogin)
 
@@ -94,6 +98,12 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth, optionalU
 			// Invoices (recargas). Marcar como paga é sensível → admins:manage.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/invoices", h.AdminListInvoices)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/invoices/{id}/mark-paid", h.AdminMarkInvoicePaid)
+
+			// Usuários, ajuste de saldo e marcação manual de pedido.
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users", h.AdminListUsers)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users/{id}", h.AdminGetUser)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 		})
 	})
 

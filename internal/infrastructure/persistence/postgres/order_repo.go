@@ -45,6 +45,11 @@ func (r *OrderRepo) GetByID(ctx context.Context, id string) (*domain.Order, erro
 	return scanOrder(row)
 }
 
+func (r *OrderRepo) GetByExternalRef(ctx context.Context, ref string) (*domain.Order, error) {
+	row := r.db.pool.QueryRow(ctx, `SELECT `+orderCols+` FROM orders WHERE external_ref=$1 LIMIT 1`, ref)
+	return scanOrder(row)
+}
+
 func (r *OrderRepo) ListByUser(ctx context.Context, userID string) ([]domain.Order, error) {
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderCols+`
 		FROM orders WHERE user_id=$1 ORDER BY created_at DESC`, userID)

@@ -2,26 +2,31 @@ package http
 
 import (
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 )
 
 type Handlers struct {
-	Plans      *application.PlanService
-	Checkout   *application.CheckoutService
-	Gateways   *application.GatewayService
-	Auth       *application.AuthService
-	UserAuth   *application.UserAuthService
-	Currencies *application.CurrencyService
-	Categories domain.CategoryRepository
-	Orders     domain.OrderRepository
-	Tickets    *application.TicketService
-	Profiles   *application.ProfileService
-	Credits    *application.CreditService
-	Invoices   *application.InvoiceService
+	Plans           *application.PlanService
+	Checkout        *application.CheckoutService
+	Gateways        *application.GatewayService
+	Auth            *application.AuthService
+	UserAuth        *application.UserAuthService
+	Currencies      *application.CurrencyService
+	Categories      domain.CategoryRepository
+	Orders          domain.OrderRepository
+	Users           domain.UserRepository
+	Tickets         *application.TicketService
+	Profiles        *application.ProfileService
+	Credits         *application.CreditService
+	Invoices        *application.InvoiceService
+	PaymentReceiver *application.PaymentReceiver
 }
 
 // --- Público ---
@@ -610,6 +615,125 @@ func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeData(w, http.StatusOK, inv)
+}
+
+// --- Webhooks (público, verificados por assinatura) --- //
+
+func (h *Handlers) WooviWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	gw, err := h.Gateways.GetActiveByProvider(r.Context(), "woovi")
+	if err != nil || gw == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	if err := payment.VerifyWooviWebhook(body, r.Header.Get("x-webhook-signature"), gw.Config["webhook_secret"]); err != nil {
+		log.Printf("webhook woovi inválido: %v", err)
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	ev, err := payment.ParseWooviEvent(body)
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if ev.IsPaid() {
+		if _, err := h.PaymentReceiver.ConfirmByExternalRef(r.Context(), ev.Charge.Identifier); err != nil {
+			log.Printf("woovi: ConfirmByExternalRef falhou: %v", err)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handlers) HeleketWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	gw, err := h.Gateways.GetActiveByProvider(r.Context(), "heleket")
+	if err != nil || gw == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	if err := payment.VerifyHeleketWebhook(body, gw.Config["api_key"]); err != nil {
+		log.Printf("webhook heleket inválido: %v", err)
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	ev, err := payment.ParseHeleketEvent(body)
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if ev.IsPaid() {
+		if _, err := h.PaymentReceiver.ConfirmByExternalRef(r.Context(), ev.UUID); err != nil {
+			log.Printf("heleket: ConfirmByExternalRef falhou: %v", err)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// --- Admin: users + credits + orders --- //
+
+func (h *Handlers) AdminListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.Users.ListWithCreditBalance(r.Context(), 200)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, users)
+}
+
+func (h *Handlers) AdminGetUser(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	u, err := h.Users.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	acct, _ := h.Credits.Balance(r.Context(), id)
+	txs, _ := h.Credits.History(r.Context(), id, 100)
+	profs, _ := h.Profiles.List(r.Context(), id)
+	writeData(w, http.StatusOK, map[string]any{
+		"user":         u,
+		"credits":      acct,
+		"transactions": txs,
+		"profiles":     profs,
+	})
+}
+
+func (h *Handlers) AdminAdjustCredits(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		DeltaCents  int64  `json:"delta_cents"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if body.Description == "" {
+		body.Description = "Ajuste manual"
+	}
+	acct, err := h.Credits.AdminAdjustment(r.Context(), id, body.DeltaCents, body.Description)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, acct)
+}
+
+func (h *Handlers) AdminMarkOrderPaid(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.PaymentReceiver.MarkOrderPaid(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func Health(w http.ResponseWriter, _ *http.Request) {
