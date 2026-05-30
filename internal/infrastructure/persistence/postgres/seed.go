@@ -124,14 +124,8 @@ func seedCurrencies(ctx context.Context, db *DB) error {
 }
 
 func seedPlans(ctx context.Context, db *DB) error {
-	var n int
-	_ = db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM plans`).Scan(&n)
-	if n > 0 {
-		return nil
-	}
-	// Planos-base de seguidores com os valores BRL definidos pelo cliente,
-	// mais serviços complementares. brl é o preço base; os preços nas demais
-	// moedas são gerados como ponto de partida editável (preço manual por moeda).
+	// Idempotente por (name, category). Permite acrescentar planos novos em
+	// versões futuras sem destruir os existentes (preços manuais sobrevivem).
 	plans := []struct {
 		name, desc, category string
 		qty                  int
@@ -208,6 +202,13 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"Lançamento de produto", "Campanha integrada em 30 dias", "servicos", 1, 1499.90, 3},
 	}
 	for _, p := range plans {
+		var existingID string
+		_ = db.pool.QueryRow(ctx,
+			`SELECT id FROM plans WHERE name=$1 AND category=$2 LIMIT 1`,
+			p.name, p.category).Scan(&existingID)
+		if existingID != "" {
+			continue
+		}
 		id := uuid.New().String()
 		cents := int(p.brl*100 + 0.5)
 		_, err := db.pool.Exec(ctx, `
