@@ -10,6 +10,8 @@ type Plan struct {
 	Name         string `json:"name"`
 	Description  string `json:"description"`
 	Category     string `json:"category"`
+	Platform     string `json:"platform"`    // instagram | tiktok
+	TargetType   string `json:"target_type"` // profile | publication
 	FollowersQty int    `json:"followers_qty"`
 	PriceCents   int    `json:"price_cents"`
 	Currency     string `json:"currency"`

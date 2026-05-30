@@ -13,7 +13,7 @@ type PlanRepo struct{ db *DB }
 
 func NewPlanRepo(db *DB) *PlanRepo { return &PlanRepo{db: db} }
 
-const planCols = `plans.id, plans.name, plans.description, plans.category, plans.followers_qty, plans.price_cents, plans.currency, plans.active, plans.sort_order, plans.created_at, plans.updated_at,
+const planCols = `plans.id, plans.name, plans.description, plans.category, plans.platform, plans.target_type, plans.followers_qty, plans.price_cents, plans.currency, plans.active, plans.sort_order, plans.created_at, plans.updated_at,
 	COALESCE((SELECT json_object_agg(pp.currency_code, pp.amount) FROM plan_prices pp WHERE pp.plan_id = plans.id), '{}')`
 
 func (r *PlanRepo) ListActive(ctx context.Context) ([]domain.Plan, error) {
@@ -50,17 +50,23 @@ func (r *PlanRepo) GetByID(ctx context.Context, id string) (*domain.Plan, error)
 }
 
 func (r *PlanRepo) Create(ctx context.Context, p domain.Plan) error {
+	if p.Platform == "" {
+		p.Platform = "instagram"
+	}
+	if p.TargetType == "" {
+		p.TargetType = "profile"
+	}
 	_, err := r.db.pool.Exec(ctx, `
-		INSERT INTO plans (id, name, description, category, followers_qty, price_cents, currency, active, sort_order)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		p.ID, p.Name, p.Description, p.Category, p.FollowersQty, p.PriceCents, p.Currency, p.Active, p.SortOrder)
+		INSERT INTO plans (id, name, description, category, platform, target_type, followers_qty, price_cents, currency, active, sort_order)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		p.ID, p.Name, p.Description, p.Category, p.Platform, p.TargetType, p.FollowersQty, p.PriceCents, p.Currency, p.Active, p.SortOrder)
 	return err
 }
 
 func (r *PlanRepo) Update(ctx context.Context, p domain.Plan) error {
 	tag, err := r.db.pool.Exec(ctx, `
-		UPDATE plans SET name=$2, description=$3, category=$4, followers_qty=$5, price_cents=$6, currency=$7, active=$8, sort_order=$9, updated_at=NOW()
-		WHERE id=$1`, p.ID, p.Name, p.Description, p.Category, p.FollowersQty, p.PriceCents, p.Currency, p.Active, p.SortOrder)
+		UPDATE plans SET name=$2, description=$3, category=$4, platform=$5, target_type=$6, followers_qty=$7, price_cents=$8, currency=$9, active=$10, sort_order=$11, updated_at=NOW()
+		WHERE id=$1`, p.ID, p.Name, p.Description, p.Category, p.Platform, p.TargetType, p.FollowersQty, p.PriceCents, p.Currency, p.Active, p.SortOrder)
 	if err != nil {
 		return err
 	}
@@ -100,7 +106,7 @@ func scanPlan(row pgx.Row) (*domain.Plan, error) {
 func scanPlanRow(row pgx.Row) (*domain.Plan, error) {
 	var p domain.Plan
 	var pricesRaw []byte
-	err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Category, &p.FollowersQty, &p.PriceCents, &p.Currency, &p.Active, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &pricesRaw)
+	err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Category, &p.Platform, &p.TargetType, &p.FollowersQty, &p.PriceCents, &p.Currency, &p.Active, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &pricesRaw)
 	if err != nil {
 		return &p, err
 	}

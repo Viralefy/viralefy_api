@@ -46,6 +46,9 @@ func main() {
 	categoryRepo := postgres.NewCategoryRepo(db)
 	currencyRepo := postgres.NewCurrencyRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
+	profileRepo := postgres.NewProfileRepo(db)
+	creditRepo := postgres.NewCreditRepo(db)
+	invoiceRepo := postgres.NewInvoiceRepo(db)
 
 	emailSender := email.New(email.Config{
 		Provider:       cfg.EmailProvider,
@@ -68,7 +71,10 @@ func main() {
 
 	planSvc := application.NewPlanService(planRepo)
 	currencySvc := application.NewCurrencyService(currencyRepo)
-	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo, currencySvc, emailSender, payments, cfg.SiteURL)
+	creditSvc := application.NewCreditService(creditRepo)
+	profileSvc := application.NewProfileService(profileRepo)
+	invoiceSvc := application.NewInvoiceService(invoiceRepo, gwRepo, userRepo, creditSvc, currencySvc, payments)
+	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo, profileRepo, currencySvc, creditSvc, emailSender, payments, cfg.SiteURL)
 	gwSvc := application.NewGatewayService(gwRepo)
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
@@ -84,9 +90,16 @@ func main() {
 		Categories: categoryRepo,
 		Orders:     orderRepo,
 		Tickets:    ticketSvc,
+		Profiles:   profileSvc,
+		Credits:    creditSvc,
+		Invoices:   invoiceSvc,
 	}
 
-	router := httphandler.NewRouter(h, cfg.CORSOrigins, httphandler.AdminAuth(authSvc), httphandler.UserAuth(userAuthSvc))
+	router := httphandler.NewRouter(h, cfg.CORSOrigins,
+		httphandler.AdminAuth(authSvc),
+		httphandler.UserAuth(userAuthSvc),
+		httphandler.OptionalUserAuth(userAuthSvc),
+	)
 	addr := cfg.BindHost + ":" + cfg.Port
 	srv := &http.Server{Addr: addr, Handler: router}
 

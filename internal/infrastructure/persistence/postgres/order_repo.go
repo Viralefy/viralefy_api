@@ -15,21 +15,28 @@ func NewOrderRepo(db *DB) *OrderRepo { return &OrderRepo{db: db} }
 
 const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	display_currency, display_amount, settlement_currency, settlement_amount,
-	gateway_id, external_ref, payment_url, payment_extra, created_at, updated_at`
+	gateway_id, external_ref, payment_url, payment_extra,
+	profile_id, publication_url, payment_method, credits_used_cents,
+	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 	extra, _ := json.Marshal(o.PaymentExtra)
 	if len(extra) == 0 {
 		extra = []byte("{}")
 	}
+	if o.PaymentMethod == "" {
+		o.PaymentMethod = "gateway"
+	}
 	_, err := r.db.pool.Exec(ctx, `
 		INSERT INTO orders (id, user_id, plan_id, status, amount_cents, currency,
 			display_currency, display_amount, settlement_currency, settlement_amount,
-			gateway_id, payment_extra)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			gateway_id, payment_extra,
+			profile_id, publication_url, payment_method, credits_used_cents)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		o.ID, o.UserID, o.PlanID, o.Status, o.AmountCents, o.Currency,
 		o.DisplayCurrency, o.DisplayAmount, o.SettlementCurrency, o.SettlementAmount,
-		o.GatewayID, extra)
+		o.GatewayID, extra,
+		o.ProfileID, o.PublicationURL, o.PaymentMethod, o.CreditsUsedCents)
 	return err
 }
 
@@ -60,7 +67,9 @@ func (r *OrderRepo) ListAll(ctx context.Context) ([]domain.Order, error) {
 
 const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.currency,
 	o.display_currency, o.display_amount, o.settlement_currency, o.settlement_amount,
-	o.gateway_id, o.external_ref, o.payment_url, o.payment_extra, o.created_at, o.updated_at,
+	o.gateway_id, o.external_ref, o.payment_url, o.payment_extra,
+	o.profile_id, o.publication_url, o.payment_method, o.credits_used_cents,
+	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, '')`
 
 func (r *OrderRepo) ListViewByUser(ctx context.Context, userID string) ([]domain.OrderView, error) {
@@ -146,7 +155,9 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 	var extra []byte
 	err := row.Scan(&o.ID, &o.UserID, &o.PlanID, &o.Status, &o.AmountCents, &o.Currency,
 		&o.DisplayCurrency, &o.DisplayAmount, &o.SettlementCurrency, &o.SettlementAmount,
-		&o.GatewayID, &o.ExternalRef, &o.PaymentURL, &extra, &o.CreatedAt, &o.UpdatedAt)
+		&o.GatewayID, &o.ExternalRef, &o.PaymentURL, &extra,
+		&o.ProfileID, &o.PublicationURL, &o.PaymentMethod, &o.CreditsUsedCents,
+		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
 		if len(extra) > 0 {
@@ -163,7 +174,9 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 		var extra []byte
 		err := rows.Scan(&v.ID, &v.UserID, &v.PlanID, &v.Status, &v.AmountCents, &v.Currency,
 			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
-			&v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra, &v.CreatedAt, &v.UpdatedAt,
+			&v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
+			&v.ProfileID, &v.PublicationURL, &v.PaymentMethod, &v.CreditsUsedCents,
+			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory)
 		if err != nil {
 			return nil, err

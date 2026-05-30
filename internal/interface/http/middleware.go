@@ -89,3 +89,20 @@ func userIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(userIDKey).(string)
 	return id
 }
+
+// OptionalUserAuth: igual ao UserAuth mas não rejeita se não houver token.
+// Quando há token válido, injeta o user_id; senão segue como request anônima.
+// Útil em endpoints públicos que aceitam usuário logado opcionalmente
+// (ex.: checkout — anônimo cria conta na hora, logado usa a existente + créditos).
+func OptionalUserAuth(auth *application.UserAuthService) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token, ok := bearerToken(r); ok {
+				if id, err := auth.ValidateToken(token); err == nil {
+					r = r.WithContext(context.WithValue(r.Context(), userIDKey, id))
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

@@ -22,10 +22,9 @@ func NewUserAuthService(users domain.UserRepository, secret string, ttl time.Dur
 }
 
 type RegisterInput struct {
-	Email     string
-	Name      string
-	Instagram string
-	Password  string
+	Email    string
+	Name     string
+	Password string
 }
 
 type UserSession struct {
@@ -43,7 +42,6 @@ type UserView struct {
 
 func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*UserSession, error) {
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
-	in.Instagram = strings.TrimSpace(strings.TrimPrefix(in.Instagram, "@"))
 	if in.Email == "" || in.Name == "" || len(in.Password) < 8 {
 		return nil, domain.ErrInvalidInput
 	}
@@ -58,7 +56,7 @@ func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*User
 		ID:           uuid.New().String(),
 		Email:        in.Email,
 		Name:         in.Name,
-		Instagram:    in.Instagram,
+		Instagram:    "", // legado — perfis ficam em /v1/me/profiles agora
 		PasswordHash: string(hash),
 	}
 	if err := s.users.Create(ctx, u); err != nil {

@@ -9,7 +9,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/domain"
 )
 
-func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.Handler) http.Handler) http.Handler {
+func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth, optionalUserAuth func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -33,7 +33,9 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.
 		r.Get("/plans", h.ListPublicPlans)
 		r.Get("/categories", h.ListCategories)
 		r.Get("/currencies", h.ListCurrencies)
-		r.Post("/checkout", h.CreateCheckout)
+		// Checkout aceita token opcional — quando logado, usa profile_id e
+		// pode pagar com créditos. Sem token, cria conta na hora.
+		r.With(optionalUserAuth).Post("/checkout", h.CreateCheckout)
 
 		// Auth admin (backoffice)
 		r.Post("/auth/login", h.AdminLogin)
@@ -46,6 +48,16 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.
 		r.Route("/me", func(r chi.Router) {
 			r.Use(userAuth)
 			r.Get("/orders", h.MeOrders)
+
+			r.Get("/profiles", h.MeListProfiles)
+			r.Post("/profiles", h.MeAddProfile)
+			r.Delete("/profiles/{id}", h.MeDeleteProfile)
+
+			r.Get("/credits", h.MeCredits)
+			r.Get("/transactions", h.MeTransactions)
+			r.Post("/recharge", h.MeRecharge)
+			r.Get("/invoices", h.MeListInvoices)
+
 			r.Get("/tickets", h.MeListTickets)
 			r.Post("/tickets", h.MeCreateTicket)
 			r.Get("/tickets/{id}", h.MeGetTicket)
@@ -78,6 +90,10 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth func(http.
 			r.With(RequirePermission(domain.PermTicketsRead)).Get("/tickets/{id}", h.AdminGetTicket)
 			r.With(RequirePermission(domain.PermTicketsWrite)).Post("/tickets/{id}/messages", h.AdminReplyTicket)
 			r.With(RequirePermission(domain.PermTicketsWrite)).Patch("/tickets/{id}", h.AdminUpdateTicket)
+
+			// Invoices (recargas). Marcar como paga é sensível → admins:manage.
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/invoices", h.AdminListInvoices)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/invoices/{id}/mark-paid", h.AdminMarkInvoicePaid)
 		})
 	})
 

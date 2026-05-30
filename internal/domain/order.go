@@ -29,6 +29,10 @@ type Order struct {
 	ExternalRef        *string           `json:"external_ref,omitempty"`
 	PaymentURL         *string           `json:"payment_url,omitempty"`
 	PaymentExtra       map[string]string `json:"payment_extra,omitempty"`
+	ProfileID          *string           `json:"profile_id,omitempty"`
+	PublicationURL     *string           `json:"publication_url,omitempty"`
+	PaymentMethod      string            `json:"payment_method"`     // gateway | credits
+	CreditsUsedCents   int               `json:"credits_used_cents"` // se payment_method=credits
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 }

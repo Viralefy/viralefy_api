@@ -15,10 +15,12 @@ type CheckoutService struct {
 	plans      domain.PlanRepository
 	orders     domain.OrderRepository
 	gateways   domain.GatewayRepository
+	profiles   domain.ProfileRepository
 	currencies *CurrencyService
+	credits    *CreditService
 	email      EmailSender
 	payments   *PaymentRegistry
-	siteURL    string // base URL pública (loja) — usado no e-mail (logo + link de suporte)
+	siteURL    string
 }
 
 func NewCheckoutService(
@@ -26,15 +28,17 @@ func NewCheckoutService(
 	plans domain.PlanRepository,
 	orders domain.OrderRepository,
 	gateways domain.GatewayRepository,
+	profiles domain.ProfileRepository,
 	currencies *CurrencyService,
+	credits *CreditService,
 	email EmailSender,
 	payments *PaymentRegistry,
 	siteURL string,
 ) *CheckoutService {
 	return &CheckoutService{
 		users: users, plans: plans, orders: orders, gateways: gateways,
-		currencies: currencies, email: email, payments: payments,
-		siteURL: siteURL,
+		profiles: profiles, currencies: currencies, credits: credits,
+		email: email, payments: payments, siteURL: siteURL,
 	}
 }
 
@@ -42,8 +46,22 @@ type CheckoutInput struct {
 	PlanID          string
 	Email           string
 	Name            string
-	Instagram       string
 	DisplayCurrency string
+	// Alvo do serviço — um dos dois conforme plan.target_type:
+	ProfileID      string // se target_type == profile (perfil já cadastrado)
+	NewProfile     *NewProfileInline
+	PublicationURL string // se target_type == publication
+	// Pagamento:
+	PaymentMethod string // "gateway" (default) ou "credits". credits exige usuário logado com saldo
+	UserID        string // setado pelo handler quando usuário está logado; obrigatório p/ credits
+}
+
+// NewProfileInline permite o usuário criar um perfil "no ato" do checkout
+// (sem precisar ir antes em /account/profiles).
+type NewProfileInline struct {
+	Platform    string
+	Handle      string
+	DisplayName string
 }
 
 type CheckoutResult struct {
@@ -59,15 +77,23 @@ type CheckoutResult struct {
 	AccountCreated     bool               `json:"account_created"`
 	Email              string             `json:"email"`
 	EmailSent          bool               `json:"email_sent"`
-	GatewayProvider    string             `json:"gateway_provider"`
+	GatewayProvider    string             `json:"gateway_provider,omitempty"`
 	PaymentURL         string             `json:"payment_url,omitempty"`
 	PaymentExtra       map[string]string  `json:"payment_extra,omitempty"`
+	PaymentMethod      string             `json:"payment_method"` // gateway | credits
+	CreditsUsedCents   int                `json:"credits_used_cents,omitempty"`
+	CreditBalanceCents int64              `json:"credit_balance_cents,omitempty"`
 }
 
 func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResult, error) {
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
-	in.Instagram = strings.TrimSpace(strings.TrimPrefix(in.Instagram, "@"))
-	if in.Email == "" || in.Name == "" || in.Instagram == "" || in.PlanID == "" {
+	if in.Email == "" || in.Name == "" || in.PlanID == "" {
+		return nil, domain.ErrInvalidInput
+	}
+	if in.PaymentMethod == "" {
+		in.PaymentMethod = "gateway"
+	}
+	if in.PaymentMethod != "gateway" && in.PaymentMethod != "credits" {
 		return nil, domain.ErrInvalidInput
 	}
 
@@ -77,6 +103,13 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	}
 	if !plan.Active {
 		return nil, domain.ErrInvalidInput
+	}
+
+	// Resolve o alvo (perfil ou URL) e VALIDA contra o tipo do plano —
+	// primeira defesa contra "mandar serviço errado".
+	profileID, publicationURL, err := s.resolveTarget(ctx, plan, in)
+	if err != nil {
+		return nil, err
 	}
 
 	quote, err := s.currencies.QuoteForPlan(ctx, plan.Prices, plan.PriceCents, in.DisplayCurrency)
@@ -91,6 +124,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	if existing != nil {
 		userID = existing.ID
 	} else {
+		if in.PaymentMethod == "credits" {
+			// Não dá pra pagar com créditos sem ter conta.
+			return nil, domain.ErrUnauthorized
+		}
 		generatedPassword = GeneratePassword()
 		hash, err := bcrypt.GenerateFromPassword([]byte(generatedPassword), 12)
 		if err != nil {
@@ -98,18 +135,36 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		}
 		userID = uuid.New().String()
 		if err := s.users.Create(ctx, domain.User{
-			ID: userID, Email: in.Email, Name: in.Name, Instagram: in.Instagram,
+			ID: userID, Email: in.Email, Name: in.Name, Instagram: "",
 			PasswordHash: string(hash),
 		}); err != nil {
 			return nil, err
 		}
 		accountCreated = true
 	}
+	if in.UserID != "" && in.UserID != userID {
+		// se o token de usuário diz outra coisa, força o user do token (segurança)
+		userID = in.UserID
+	}
 
-	gw := s.pickGateway(ctx, quote.SettlementCurrency)
-	var gatewayID *string
-	if gw != nil {
-		gatewayID = &gw.ID
+	// Se o handler quer criar um perfil inline pro usuário logado:
+	if in.NewProfile != nil && profileID == "" && plan.TargetType == "profile" {
+		platform := domain.Platform(in.NewProfile.Platform)
+		if err := ValidateHandle(platform, in.NewProfile.Handle); err != nil {
+			return nil, domain.ErrInvalidInput
+		}
+		np := domain.Profile{
+			ID:          uuid.New().String(),
+			UserID:      userID,
+			Platform:    platform,
+			Handle:      NormalizeHandle(in.NewProfile.Handle),
+			DisplayName: in.NewProfile.DisplayName,
+			Verified:    true,
+		}
+		if err := s.profiles.Create(ctx, np); err != nil {
+			return nil, err
+		}
+		profileID = np.ID
 	}
 
 	orderID := uuid.New().String()
@@ -124,13 +179,57 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		DisplayAmount:      quote.DisplayAmount,
 		SettlementCurrency: quote.SettlementCurrency,
 		SettlementAmount:   quote.SettlementAmount,
-		GatewayID:          gatewayID,
+		PaymentMethod:      in.PaymentMethod,
+	}
+	if profileID != "" {
+		order.ProfileID = &profileID
+	}
+	if publicationURL != "" {
+		order.PublicationURL = &publicationURL
+	}
+
+	// ---------- Caminho A: pagamento com créditos ----------
+	if in.PaymentMethod == "credits" {
+		// Conta + saldo.
+		acct, err := s.credits.Balance(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if acct.BalanceCents < int64(plan.PriceCents) {
+			return nil, domain.ErrInvalidInput // saldo insuficiente — front trata
+		}
+		// Pedido já entra como pago (não há cobrança externa).
+		order.Status = domain.OrderStatusPaid
+		order.CreditsUsedCents = plan.PriceCents
+		if err := s.orders.Create(ctx, order); err != nil {
+			return nil, err
+		}
+		// Debita do ledger (atômico no repo).
+		newAcct, err := s.credits.Spend(ctx, userID, int64(plan.PriceCents), "Pedido "+plan.Name, &orderID)
+		if err != nil {
+			return nil, err
+		}
+		emailSent := s.sendCheckoutEmail(ctx, in.Email, in.Name, *plan, quote, nil, "", nil, generatedPassword, accountCreated, true)
+
+		return &CheckoutResult{
+			OrderID: orderID, Status: order.Status, PlanName: plan.Name,
+			DisplayCurrency: quote.DisplayCurrency, DisplaySymbol: quote.DisplaySymbol, DisplayAmount: quote.DisplayAmount,
+			SettlementCurrency: quote.SettlementCurrency, SettlementSymbol: quote.SettlementSymbol, SettlementAmount: quote.SettlementAmount,
+			AccountCreated: accountCreated, Email: in.Email, EmailSent: emailSent,
+			PaymentMethod: "credits", CreditsUsedCents: plan.PriceCents,
+			CreditBalanceCents: newAcct.BalanceCents,
+		}, nil
+	}
+
+	// ---------- Caminho B: pagamento via gateway (padrão) ----------
+	gw := s.pickGateway(ctx, quote.SettlementCurrency)
+	if gw != nil {
+		order.GatewayID = &gw.ID
 	}
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, err
 	}
 
-	// Cria cobrança no provider (PIX ou cripto) e persiste no pedido.
 	provider := ""
 	var paymentURL string
 	var paymentExtra map[string]string
@@ -155,29 +254,60 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		}
 	}
 
-	emailSent := s.sendCheckoutEmail(ctx, in.Email, in.Name, *plan, quote, gw, paymentURL, paymentExtra, generatedPassword, accountCreated)
+	emailSent := s.sendCheckoutEmail(ctx, in.Email, in.Name, *plan, quote, gw, paymentURL, paymentExtra, generatedPassword, accountCreated, false)
 
 	return &CheckoutResult{
-		OrderID:            orderID,
-		Status:             domain.OrderStatusPending,
-		PlanName:           plan.Name,
-		DisplayCurrency:    quote.DisplayCurrency,
-		DisplaySymbol:      quote.DisplaySymbol,
-		DisplayAmount:      quote.DisplayAmount,
-		SettlementCurrency: quote.SettlementCurrency,
-		SettlementSymbol:   quote.SettlementSymbol,
-		SettlementAmount:   quote.SettlementAmount,
-		AccountCreated:     accountCreated,
-		Email:              in.Email,
-		EmailSent:          emailSent,
-		GatewayProvider:    provider,
-		PaymentURL:         paymentURL,
-		PaymentExtra:       paymentExtra,
+		OrderID: orderID, Status: domain.OrderStatusPending, PlanName: plan.Name,
+		DisplayCurrency: quote.DisplayCurrency, DisplaySymbol: quote.DisplaySymbol, DisplayAmount: quote.DisplayAmount,
+		SettlementCurrency: quote.SettlementCurrency, SettlementSymbol: quote.SettlementSymbol, SettlementAmount: quote.SettlementAmount,
+		AccountCreated: accountCreated, Email: in.Email, EmailSent: emailSent,
+		GatewayProvider: provider, PaymentURL: paymentURL, PaymentExtra: paymentExtra,
+		PaymentMethod: "gateway",
 	}, nil
 }
 
-// pickGateway escolhe o gateway adequado para a moeda de liquidação. Roteia
-// BRL → woovi (PIX), USDT/BTC → heleket (cripto), demais → default ativo.
+// resolveTarget valida que o alvo informado bate com plan.target_type e
+// retorna profileID/URL apropriados pra persistir no pedido.
+func (s *CheckoutService) resolveTarget(ctx context.Context, plan *domain.Plan, in CheckoutInput) (string, string, error) {
+	switch plan.TargetType {
+	case "profile", "":
+		// Aceita ProfileID existente OU NewProfile inline. Pelo menos um.
+		if in.ProfileID != "" {
+			p, err := s.profiles.GetByID(ctx, in.ProfileID)
+			if err != nil {
+				return "", "", domain.ErrInvalidInput
+			}
+			// Confere plataforma: serviço de TikTok não pode ir num perfil IG.
+			if plan.Platform != "" && string(p.Platform) != plan.Platform {
+				return "", "", domain.ErrInvalidInput
+			}
+			return p.ID, "", nil
+		}
+		if in.NewProfile != nil {
+			// Plataforma do inline tem que casar com a do plano.
+			if plan.Platform != "" && in.NewProfile.Platform != plan.Platform {
+				return "", "", domain.ErrInvalidInput
+			}
+			return "", "", nil // será criado depois (precisamos do userID)
+		}
+		return "", "", domain.ErrInvalidInput
+	case "publication":
+		if in.PublicationURL == "" {
+			return "", "", domain.ErrInvalidInput
+		}
+		platform := domain.Platform(plan.Platform)
+		if platform == "" {
+			platform = domain.PlatformInstagram
+		}
+		if err := ValidatePublicationURL(platform, in.PublicationURL); err != nil {
+			return "", "", domain.ErrInvalidInput
+		}
+		return "", strings.TrimSpace(in.PublicationURL), nil
+	}
+	return "", "", domain.ErrInvalidInput
+}
+
+// pickGateway escolhe o gateway adequado para a moeda de liquidação.
 func (s *CheckoutService) pickGateway(ctx context.Context, settlement string) *domain.PaymentGateway {
 	candidate := ""
 	switch strings.ToUpper(settlement) {
@@ -198,7 +328,7 @@ func (s *CheckoutService) pickGateway(ctx context.Context, settlement string) *d
 func (s *CheckoutService) sendCheckoutEmail(
 	ctx context.Context, to, name string, plan domain.Plan, q Quote, gw *domain.PaymentGateway,
 	paymentURL string, paymentExtra map[string]string,
-	password string, accountCreated bool,
+	password string, accountCreated bool, paidWithCredits bool,
 ) bool {
 	data := CheckoutEmailData{
 		SiteURL:              s.siteURL,
@@ -214,6 +344,9 @@ func (s *CheckoutService) sendCheckoutEmail(
 		Password:             password,
 		PaymentURL:           paymentURL,
 		FallbackInstructions: "As instruções de pagamento seguem em breve. Em caso de dúvida, abra um ticket.",
+	}
+	if paidWithCredits {
+		data.FallbackInstructions = "Pagamento com créditos confirmado. Seu pedido já está em produção."
 	}
 	if paymentExtra != nil {
 		data.BrCode = paymentExtra["br_code"]

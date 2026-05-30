@@ -19,6 +19,9 @@ type Handlers struct {
 	Categories domain.CategoryRepository
 	Orders     domain.OrderRepository
 	Tickets    *application.TicketService
+	Profiles   *application.ProfileService
+	Credits    *application.CreditService
+	Invoices   *application.InvoiceService
 }
 
 // --- Público ---
@@ -52,20 +55,35 @@ func (h *Handlers) ListCurrencies(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		PlanID          string `json:"plan_id"`
-		Email           string `json:"email"`
-		Name            string `json:"name"`
-		Instagram       string `json:"instagram"`
-		DisplayCurrency string `json:"display_currency"`
+		PlanID          string                        `json:"plan_id"`
+		Email           string                        `json:"email"`
+		Name            string                        `json:"name"`
+		DisplayCurrency string                        `json:"display_currency"`
+		ProfileID       string                        `json:"profile_id,omitempty"`
+		NewProfile      *application.NewProfileInline `json:"new_profile,omitempty"`
+		PublicationURL  string                        `json:"publication_url,omitempty"`
+		PaymentMethod   string                        `json:"payment_method,omitempty"` // gateway | credits
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
-	res, err := h.Checkout.Checkout(r.Context(), application.CheckoutInput{
-		PlanID: body.PlanID, Email: body.Email, Name: body.Name,
-		Instagram: body.Instagram, DisplayCurrency: body.DisplayCurrency,
-	})
+	in := application.CheckoutInput{
+		PlanID:          body.PlanID,
+		Email:           body.Email,
+		Name:            body.Name,
+		DisplayCurrency: body.DisplayCurrency,
+		ProfileID:       body.ProfileID,
+		NewProfile:      body.NewProfile,
+		PublicationURL:  body.PublicationURL,
+		PaymentMethod:   body.PaymentMethod,
+	}
+	// Se houver token de usuário, força o userID do token (rota /v1/checkout é
+	// pública mas honra a autenticação opcional para credit/profile linkage).
+	if uid := userIDFromContext(r.Context()); uid != "" {
+		in.UserID = uid
+	}
+	res, err := h.Checkout.Checkout(r.Context(), in)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -77,17 +95,16 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) UserRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email     string `json:"email"`
-		Name      string `json:"name"`
-		Instagram string `json:"instagram"`
-		Password  string `json:"password"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
 	res, err := h.UserAuth.Register(r.Context(), application.RegisterInput{
-		Email: body.Email, Name: body.Name, Instagram: body.Instagram, Password: body.Password,
+		Email: body.Email, Name: body.Name, Password: body.Password,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -443,6 +460,156 @@ func (h *Handlers) AdminUpdateCurrency(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, c)
+}
+
+// --- Perfis (loja, área logada) --- //
+
+func (h *Handlers) MeListProfiles(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	list, err := h.Profiles.List(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+func (h *Handlers) MeAddProfile(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Platform    string `json:"platform"`
+		Handle      string `json:"handle"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	p, err := h.Profiles.Add(r.Context(), application.AddProfileInput{
+		UserID: userID, Platform: body.Platform, Handle: body.Handle, DisplayName: body.DisplayName,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusCreated, p)
+}
+
+func (h *Handlers) MeDeleteProfile(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if err := h.Profiles.Delete(r.Context(), chi.URLParam(r, "id"), userID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Créditos + ledger --- //
+
+func (h *Handlers) MeCredits(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	acct, err := h.Credits.Balance(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, acct)
+}
+
+func (h *Handlers) MeTransactions(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	list, err := h.Credits.History(r.Context(), userID, 200)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+// --- Invoices (recarga de créditos) --- //
+
+func (h *Handlers) MeRecharge(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		AmountCents     int64  `json:"amount_cents"`
+		DisplayCurrency string `json:"display_currency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	// Precisamos do e-mail/nome do user para passar pro gateway.
+	// Como o handler tem só o userID, pegamos via Orders.ListByUser? Não — o
+	// jeito limpo é o service buscar via UserRepository. Pra evitar nova
+	// dependência aqui no handler, devolvemos os dados via service que sabe ler.
+	inv, err := h.Invoices.Create(r.Context(), application.CreateInvoiceInput{
+		UserID:          userID,
+		AmountCents:     body.AmountCents,
+		DisplayCurrency: body.DisplayCurrency,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusCreated, inv)
+}
+
+func (h *Handlers) MeListInvoices(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	list, err := h.Invoices.ListForUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+// --- Admin: invoices --- //
+
+func (h *Handlers) AdminListInvoices(w http.ResponseWriter, r *http.Request) {
+	list, err := h.Invoices.AdminList(r.Context(), r.URL.Query().Get("status"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) {
+	inv, err := h.Invoices.AdminMarkPaid(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, inv)
 }
 
 func Health(w http.ResponseWriter, _ *http.Request) {
