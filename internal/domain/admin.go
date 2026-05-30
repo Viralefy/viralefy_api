@@ -1,15 +1,19 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Admin struct {
 	ID           string
 	Email        string
 	PasswordHash string
 	Name         string
+	Role         string
 	CreatedAt    time.Time
 }
 
 type AdminRepository interface {
-	GetByEmail(ctx interface{}, email string) (*Admin, error)
+	GetByEmail(ctx context.Context, email string) (*Admin, error)
 }

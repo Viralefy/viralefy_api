@@ -1,0 +1,99 @@
+package application
+
+import (
+	"context"
+	"strconv"
+
+	"github.com/viralefy/viralefy_api/internal/domain"
+)
+
+type CurrencyService struct {
+	repo domain.CurrencyRepository
+}
+
+func NewCurrencyService(repo domain.CurrencyRepository) *CurrencyService {
+	return &CurrencyService{repo: repo}
+}
+
+// ListDisplayable retorna as moedas que o cliente pode escolher para exibição.
+func (s *CurrencyService) ListDisplayable(ctx context.Context) ([]domain.Currency, error) {
+	return s.repo.ListDisplayable(ctx)
+}
+
+// ListAll retorna todas as moedas (uso admin).
+func (s *CurrencyService) ListAll(ctx context.Context) ([]domain.Currency, error) {
+	return s.repo.ListAll(ctx)
+}
+
+func (s *CurrencyService) Get(ctx context.Context, code string) (*domain.Currency, error) {
+	return s.repo.GetByCode(ctx, code)
+}
+
+type UpdateCurrencyInput struct {
+	Code           string
+	Rate           float64
+	DisplayEnabled bool
+	SettlementCode string
+}
+
+func (s *CurrencyService) Update(ctx context.Context, in UpdateCurrencyInput) (*domain.Currency, error) {
+	if in.Rate <= 0 || in.SettlementCode == "" {
+		return nil, domain.ErrInvalidInput
+	}
+	if _, err := s.repo.GetByCode(ctx, in.SettlementCode); err != nil {
+		return nil, domain.ErrInvalidInput
+	}
+	if err := s.repo.UpdateRate(ctx, in.Code, in.Rate, in.DisplayEnabled, in.SettlementCode); err != nil {
+		return nil, err
+	}
+	return s.repo.GetByCode(ctx, in.Code)
+}
+
+// Quote é a conversão de um preço base (BRL cents) para a moeda de exibição
+// escolhida e a moeda de liquidação correspondente.
+type Quote struct {
+	DisplayCurrency    string `json:"display_currency"`
+	DisplaySymbol      string `json:"display_symbol"`
+	DisplayAmount      string `json:"display_amount"`
+	SettlementCurrency string `json:"settlement_currency"`
+	SettlementSymbol   string `json:"settlement_symbol"`
+	SettlementAmount   string `json:"settlement_amount"`
+}
+
+// QuoteForPlan resolve o preço de exibição e de liquidação de um plano usando
+// os preços manuais por moeda (prices). Se a moeda escolhida não tiver preço
+// manual, faz fallback para conversão a partir do BRL (brlCents). Resolve a
+// moeda de liquidação (ex.: USD exibe, USDT cobra). Moeda inválida cai em BRL.
+func (s *CurrencyService) QuoteForPlan(ctx context.Context, prices map[string]string, brlCents int, displayCode string) (Quote, error) {
+	if displayCode == "" {
+		displayCode = "BRL"
+	}
+	display, err := s.repo.GetByCode(ctx, displayCode)
+	if err != nil || !display.DisplayEnabled {
+		display, err = s.repo.GetByCode(ctx, "BRL")
+		if err != nil {
+			return Quote{}, err
+		}
+	}
+	settle, err := s.repo.GetByCode(ctx, display.SettlementCode)
+	if err != nil {
+		settle = display
+	}
+	return Quote{
+		DisplayCurrency:    display.Code,
+		DisplaySymbol:      display.Symbol,
+		DisplayAmount:      amountFor(prices, brlCents, *display),
+		SettlementCurrency: settle.Code,
+		SettlementSymbol:   settle.Symbol,
+		SettlementAmount:   amountFor(prices, brlCents, *settle),
+	}, nil
+}
+
+// amountFor devolve o preço manual da moeda se existir; senão converte do BRL.
+func amountFor(prices map[string]string, brlCents int, c domain.Currency) string {
+	if v, ok := prices[c.Code]; ok && v != "" {
+		return v
+	}
+	amount := float64(brlCents) / 100.0 * c.Rate
+	return strconv.FormatFloat(amount, 'f', c.Decimals, 64)
+}

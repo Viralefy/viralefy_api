@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type User struct {
 	ID           string
@@ -12,7 +15,7 @@ type User struct {
 }
 
 type UserRepository interface {
-	Create(ctx interface{}, u User) error
-	GetByEmail(ctx interface{}, email string) (*User, error)
-	GetByID(ctx interface{}, id string) (*User, error)
+	Create(ctx context.Context, u User) error
+	GetByEmail(ctx context.Context, email string) (*User, error)
+	GetByID(ctx context.Context, id string) (*User, error)
 }

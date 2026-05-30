@@ -51,6 +51,17 @@ func (r *GatewayRepo) GetDefaultActive(ctx context.Context) (*domain.PaymentGate
 	return g, err
 }
 
+func (r *GatewayRepo) GetActiveByProvider(ctx context.Context, provider string) (*domain.PaymentGateway, error) {
+	row := r.db.pool.QueryRow(ctx, `
+		SELECT id, name, provider, active, config, created_at, updated_at
+		FROM payment_gateways WHERE active=true AND provider=$1 ORDER BY created_at LIMIT 1`, provider)
+	g, err := scanGateway(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return g, err
+}
+
 func (r *GatewayRepo) Create(ctx context.Context, g domain.PaymentGateway) error {
 	cfg, _ := json.Marshal(g.Config)
 	_, err := r.db.pool.Exec(ctx, `

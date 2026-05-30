@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"strings"
 
 	"github.com/google/uuid"
@@ -10,10 +12,13 @@ import (
 )
 
 type CheckoutService struct {
-	users    domain.UserRepository
-	plans    domain.PlanRepository
-	orders   domain.OrderRepository
-	gateways domain.GatewayRepository
+	users      domain.UserRepository
+	plans      domain.PlanRepository
+	orders     domain.OrderRepository
+	gateways   domain.GatewayRepository
+	currencies *CurrencyService
+	email      EmailSender
+	payments   *PaymentRegistry
 }
 
 func NewCheckoutService(
@@ -21,33 +26,46 @@ func NewCheckoutService(
 	plans domain.PlanRepository,
 	orders domain.OrderRepository,
 	gateways domain.GatewayRepository,
+	currencies *CurrencyService,
+	email EmailSender,
+	payments *PaymentRegistry,
 ) *CheckoutService {
-	return &CheckoutService{users: users, plans: plans, orders: orders, gateways: gateways}
+	return &CheckoutService{
+		users: users, plans: plans, orders: orders, gateways: gateways,
+		currencies: currencies, email: email, payments: payments,
+	}
 }
 
 type CheckoutInput struct {
-	PlanID    string
-	Email     string
-	Name      string
-	Instagram string
-	Password  string
+	PlanID          string
+	Email           string
+	Name            string
+	Instagram       string
+	DisplayCurrency string
 }
 
 type CheckoutResult struct {
-	UserID   string             `json:"user_id"`
-	OrderID  string             `json:"order_id"`
-	Status   domain.OrderStatus `json:"status"`
-	Amount   int                `json:"amount"`
-	Currency string             `json:"currency"`
+	OrderID            string             `json:"order_id"`
+	Status             domain.OrderStatus `json:"status"`
+	PlanName           string             `json:"plan_name"`
+	DisplayCurrency    string             `json:"display_currency"`
+	DisplaySymbol      string             `json:"display_symbol"`
+	DisplayAmount      string             `json:"display_amount"`
+	SettlementCurrency string             `json:"settlement_currency"`
+	SettlementSymbol   string             `json:"settlement_symbol"`
+	SettlementAmount   string             `json:"settlement_amount"`
+	AccountCreated     bool               `json:"account_created"`
+	Email              string             `json:"email"`
+	EmailSent          bool               `json:"email_sent"`
+	GatewayProvider    string             `json:"gateway_provider"`
+	PaymentURL         string             `json:"payment_url,omitempty"`
+	PaymentExtra       map[string]string  `json:"payment_extra,omitempty"`
 }
 
 func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResult, error) {
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
 	in.Instagram = strings.TrimSpace(strings.TrimPrefix(in.Instagram, "@"))
-	if in.Email == "" || in.Name == "" || in.Instagram == "" || in.Password == "" || in.PlanID == "" {
-		return nil, domain.ErrInvalidInput
-	}
-	if len(in.Password) < 8 {
+	if in.Email == "" || in.Name == "" || in.Instagram == "" || in.PlanID == "" {
 		return nil, domain.ErrInvalidInput
 	}
 
@@ -59,29 +77,34 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		return nil, domain.ErrInvalidInput
 	}
 
+	quote, err := s.currencies.QuoteForPlan(ctx, plan.Prices, plan.PriceCents, in.DisplayCurrency)
+	if err != nil {
+		return nil, err
+	}
+
+	// Autocadastro: cria conta se não existir e gera senha; senão reaproveita.
 	existing, _ := s.users.GetByEmail(ctx, in.Email)
-	var userID string
+	var userID, generatedPassword string
+	accountCreated := false
 	if existing != nil {
 		userID = existing.ID
 	} else {
-		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), 12)
+		generatedPassword = GeneratePassword()
+		hash, err := bcrypt.GenerateFromPassword([]byte(generatedPassword), 12)
 		if err != nil {
 			return nil, err
 		}
 		userID = uuid.New().String()
-		u := domain.User{
-			ID:           userID,
-			Email:        in.Email,
-			Name:         in.Name,
-			Instagram:    in.Instagram,
+		if err := s.users.Create(ctx, domain.User{
+			ID: userID, Email: in.Email, Name: in.Name, Instagram: in.Instagram,
 			PasswordHash: string(hash),
-		}
-		if err := s.users.Create(ctx, u); err != nil {
+		}); err != nil {
 			return nil, err
 		}
+		accountCreated = true
 	}
 
-	gw, _ := s.gateways.GetDefaultActive(ctx)
+	gw := s.pickGateway(ctx, quote.SettlementCurrency)
 	var gatewayID *string
 	if gw != nil {
 		gatewayID = &gw.ID
@@ -89,23 +112,131 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 
 	orderID := uuid.New().String()
 	order := domain.Order{
-		ID:          orderID,
-		UserID:      userID,
-		PlanID:      plan.ID,
-		Status:      domain.OrderStatusPending,
-		AmountCents: plan.PriceCents,
-		Currency:    plan.Currency,
-		GatewayID:   gatewayID,
+		ID:                 orderID,
+		UserID:             userID,
+		PlanID:             plan.ID,
+		Status:             domain.OrderStatusPending,
+		AmountCents:        plan.PriceCents,
+		Currency:           plan.Currency,
+		DisplayCurrency:    quote.DisplayCurrency,
+		DisplayAmount:      quote.DisplayAmount,
+		SettlementCurrency: quote.SettlementCurrency,
+		SettlementAmount:   quote.SettlementAmount,
+		GatewayID:          gatewayID,
 	}
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, err
 	}
 
+	// Cria cobrança no provider (PIX ou cripto) e persiste no pedido.
+	provider := ""
+	var paymentURL string
+	var paymentExtra map[string]string
+	if gw != nil {
+		provider = gw.Provider
+		if p, ok := s.payments.Get(gw.Provider); ok {
+			charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
+				OrderID:     orderID,
+				Description: plan.Name,
+				Amount:      quote.SettlementAmount,
+				Currency:    quote.SettlementCurrency,
+				Customer:    PaymentCustomer{Name: in.Name, Email: in.Email},
+				Config:      gw.Config,
+			})
+			if perr != nil {
+				log.Printf("checkout: provider %s falhou: %v", gw.Provider, perr)
+			} else {
+				paymentURL = charge.PaymentURL
+				paymentExtra = charge.Extra
+				_ = s.orders.UpdatePayment(ctx, orderID, charge.ExternalRef, charge.PaymentURL, charge.Extra)
+			}
+		}
+	}
+
+	emailSent := s.sendCheckoutEmail(ctx, in.Email, in.Name, *plan, quote, gw, paymentURL, paymentExtra, generatedPassword, accountCreated)
+
 	return &CheckoutResult{
-		UserID:   userID,
-		OrderID:  orderID,
-		Status:   domain.OrderStatusPending,
-		Amount:   plan.PriceCents,
-		Currency: plan.Currency,
+		OrderID:            orderID,
+		Status:             domain.OrderStatusPending,
+		PlanName:           plan.Name,
+		DisplayCurrency:    quote.DisplayCurrency,
+		DisplaySymbol:      quote.DisplaySymbol,
+		DisplayAmount:      quote.DisplayAmount,
+		SettlementCurrency: quote.SettlementCurrency,
+		SettlementSymbol:   quote.SettlementSymbol,
+		SettlementAmount:   quote.SettlementAmount,
+		AccountCreated:     accountCreated,
+		Email:              in.Email,
+		EmailSent:          emailSent,
+		GatewayProvider:    provider,
+		PaymentURL:         paymentURL,
+		PaymentExtra:       paymentExtra,
 	}, nil
+}
+
+// pickGateway escolhe o gateway adequado para a moeda de liquidação. Roteia
+// BRL → woovi (PIX), USDT/BTC → heleket (cripto), demais → default ativo.
+func (s *CheckoutService) pickGateway(ctx context.Context, settlement string) *domain.PaymentGateway {
+	candidate := ""
+	switch strings.ToUpper(settlement) {
+	case "BRL":
+		candidate = "woovi"
+	case "USDT", "BTC":
+		candidate = "heleket"
+	}
+	if candidate != "" {
+		if g, err := s.gateways.GetActiveByProvider(ctx, candidate); err == nil && g != nil {
+			return g
+		}
+	}
+	g, _ := s.gateways.GetDefaultActive(ctx)
+	return g
+}
+
+func (s *CheckoutService) sendCheckoutEmail(
+	ctx context.Context, to, name string, plan domain.Plan, q Quote, gw *domain.PaymentGateway,
+	paymentURL string, paymentExtra map[string]string,
+	password string, accountCreated bool,
+) bool {
+	payAmount := fmt.Sprintf("%s %s", q.SettlementAmount, q.SettlementCurrency)
+	payInfo := "As instruções de pagamento seguem abaixo."
+	if paymentURL != "" {
+		payInfo = "Pague em: " + paymentURL
+	} else if brCode := paymentExtra["br_code"]; brCode != "" {
+		payInfo = "Código PIX (copia-e-cola):\n" + brCode
+	} else if addr := paymentExtra["address"]; addr != "" {
+		network := paymentExtra["network"]
+		payInfo = fmt.Sprintf("Envie %s para a carteira: %s", payAmount, addr)
+		if network != "" {
+			payInfo += " (rede " + network + ")"
+		}
+	} else if gw != nil {
+		if pixKey := gw.Config["pix_key"]; pixKey != "" && q.SettlementCurrency == "BRL" {
+			payInfo = "Pague via PIX para a chave: " + pixKey
+		}
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Olá, %s!\n\n", name)
+	fmt.Fprintf(&sb, "Recebemos seu pedido do plano \"%s\".\n", plan.Name)
+	fmt.Fprintf(&sb, "Valor: %s %s (cobrança em %s).\n\n", q.DisplaySymbol, q.DisplayAmount, payAmount)
+	if accountCreated {
+		fmt.Fprintf(&sb, "Criamos uma conta para você acompanhar suas compras:\n")
+		fmt.Fprintf(&sb, "  E-mail: %s\n", to)
+		fmt.Fprintf(&sb, "  Senha:  %s\n\n", password)
+		fmt.Fprintf(&sb, "Recomendamos alterar a senha após o primeiro acesso.\n\n")
+	}
+	fmt.Fprintf(&sb, "%s\n", payInfo)
+	text := sb.String()
+
+	subject := "Viralefy — pedido recebido"
+	if accountCreated {
+		subject = "Viralefy — sua conta e seu pedido"
+	}
+
+	if err := s.email.Send(ctx, EmailMessage{To: to, Subject: subject, TextBody: text, HTMLBody: "<pre>" + text + "</pre>"}); err != nil {
+		log.Printf("checkout: falha ao enviar e-mail para %s: %v", to, err)
+		return false
+	}
+	return true
 }

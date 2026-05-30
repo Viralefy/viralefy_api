@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type PaymentGateway struct {
 	ID        string            `json:"id"`
@@ -13,10 +16,11 @@ type PaymentGateway struct {
 }
 
 type GatewayRepository interface {
-	ListAll(ctx interface{}) ([]PaymentGateway, error)
-	GetByID(ctx interface{}, id string) (*PaymentGateway, error)
-	Create(ctx interface{}, g PaymentGateway) error
-	Update(ctx interface{}, g PaymentGateway) error
-	Delete(ctx interface{}, id string) error
-	GetDefaultActive(ctx interface{}) (*PaymentGateway, error)
+	ListAll(ctx context.Context) ([]PaymentGateway, error)
+	GetByID(ctx context.Context, id string) (*PaymentGateway, error)
+	Create(ctx context.Context, g PaymentGateway) error
+	Update(ctx context.Context, g PaymentGateway) error
+	Delete(ctx context.Context, id string) error
+	GetDefaultActive(ctx context.Context) (*PaymentGateway, error)
+	GetActiveByProvider(ctx context.Context, provider string) (*PaymentGateway, error)
 }

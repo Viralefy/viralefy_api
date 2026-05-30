@@ -11,8 +11,10 @@ import (
 
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/config"
-	httphandler "github.com/viralefy/viralefy_api/internal/interface/http"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/persistence/postgres"
+	httphandler "github.com/viralefy/viralefy_api/internal/interface/http"
 )
 
 func main() {
@@ -40,21 +42,48 @@ func main() {
 	orderRepo := postgres.NewOrderRepo(db)
 	gwRepo := postgres.NewGatewayRepo(db)
 	adminRepo := postgres.NewAdminRepo(db)
+	roleRepo := postgres.NewRoleRepo(db)
+	categoryRepo := postgres.NewCategoryRepo(db)
+	currencyRepo := postgres.NewCurrencyRepo(db)
+
+	emailSender := email.New(email.Config{
+		Provider:       cfg.EmailProvider,
+		Addr:           cfg.SMTPAddr,
+		User:           cfg.SMTPUser,
+		Pass:           cfg.SMTPPass,
+		From:           cfg.SMTPFrom,
+		FromName:       cfg.SMTPFromName,
+		ResendAPIKey:   cfg.ResendAPIKey,
+		ResendFrom:     cfg.ResendFrom,
+		ResendFromName: cfg.ResendFromName,
+		ResendBaseURL:  cfg.ResendBaseURL,
+	})
+
+	payments := application.NewPaymentRegistry(
+		payment.NewWoovi(),
+		payment.NewHeleket(),
+		payment.NewManualPIX(),
+	)
 
 	planSvc := application.NewPlanService(planRepo)
-	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo)
+	currencySvc := application.NewCurrencyService(currencyRepo)
+	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo, currencySvc, emailSender, payments)
 	gwSvc := application.NewGatewayService(gwRepo)
-	authSvc := application.NewAuthService(adminRepo, cfg.JWTSecret, cfg.JWTTTL)
+	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
+	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
 
 	h := &httphandler.Handlers{
-		Plans:    planSvc,
-		Checkout: checkoutSvc,
-		Gateways: gwSvc,
-		Auth:     authSvc,
-		Orders:   orderRepo,
+		Plans:      planSvc,
+		Checkout:   checkoutSvc,
+		Gateways:   gwSvc,
+		Auth:       authSvc,
+		UserAuth:   userAuthSvc,
+		Currencies: currencySvc,
+		Categories: categoryRepo,
+		Orders:     orderRepo,
 	}
 
-	router := httphandler.NewRouter(h, cfg.CORSOrigins, httphandler.AdminAuth(authSvc))
+	router := httphandler.NewRouter(h, cfg.CORSOrigins, httphandler.AdminAuth(authSvc), httphandler.UserAuth(userAuthSvc))
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 
 	go func() {

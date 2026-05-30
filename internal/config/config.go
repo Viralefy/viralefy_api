@@ -8,11 +8,22 @@ import (
 )
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	JWTSecret   string
-	JWTTTL      time.Duration
-	CORSOrigins []string
+	Port         string
+	DatabaseURL  string
+	JWTSecret    string
+	JWTTTL       time.Duration
+	CORSOrigins  []string
+	SMTPAddr     string
+	SMTPUser     string
+	SMTPPass     string
+	SMTPFrom     string
+	SMTPFromName string
+
+	EmailProvider  string
+	ResendAPIKey   string
+	ResendFrom     string
+	ResendFromName string
+	ResendBaseURL  string
 }
 
 func Load() (Config, error) {
@@ -22,11 +33,22 @@ func Load() (Config, error) {
 	ttlHours, _ := strconv.Atoi(getenv("JWT_TTL_HOURS", "24"))
 	cors := getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
 	cfg := Config{
-		Port:        port,
-		DatabaseURL: db,
-		JWTSecret:   secret,
-		JWTTTL:      time.Duration(ttlHours) * time.Hour,
-		CORSOrigins: splitCSV(cors),
+		Port:         port,
+		DatabaseURL:  db,
+		JWTSecret:    secret,
+		JWTTTL:       time.Duration(ttlHours) * time.Hour,
+		CORSOrigins:  splitCSV(cors),
+		SMTPAddr:     getenv("SMTP_ADDR", ""),
+		SMTPUser:     getenv("SMTP_USER", ""),
+		SMTPPass:     getenv("SMTP_PASS", ""),
+		SMTPFrom:     getenv("SMTP_FROM", "no-reply@viralefy.local"),
+		SMTPFromName: getenv("SMTP_FROM_NAME", "Viralefy"),
+
+		EmailProvider:  getenv("EMAIL_PROVIDER", ""),
+		ResendAPIKey:   getenv("RESEND_API_KEY", ""),
+		ResendFrom:     getenv("RESEND_FROM", "onboarding@resend.dev"),
+		ResendFromName: getenv("RESEND_FROM_NAME", "Viralefy"),
+		ResendBaseURL:  getenv("RESEND_BASE_URL", "https://api.resend.com"),
 	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")

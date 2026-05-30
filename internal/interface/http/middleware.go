@@ -11,24 +11,81 @@ import (
 
 type ctxKey string
 
-const adminIDKey ctxKey = "admin_id"
+const principalKey ctxKey = "principal"
+const userIDKey ctxKey = "user_id"
 
+func bearerToken(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") {
+		return "", false
+	}
+	return strings.TrimPrefix(h, "Bearer "), true
+}
+
+// AdminAuth valida o token de admin e injeta o Principal (RBAC) no contexto.
 func AdminAuth(auth *application.AuthService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := r.Header.Get("Authorization")
-			if !strings.HasPrefix(h, "Bearer ") {
+			token, ok := bearerToken(r)
+			if !ok {
 				writeError(w, domain.ErrUnauthorized)
 				return
 			}
-			token := strings.TrimPrefix(h, "Bearer ")
+			principal, err := auth.ValidateAdmin(r.Context(), token)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			ctx := context.WithValue(r.Context(), principalKey, principal)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequirePermission é o gate RBAC por rota. Deve ser usado após AdminAuth.
+func RequirePermission(perm string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := principalFromContext(r.Context())
+			if !ok {
+				writeError(w, domain.ErrUnauthorized)
+				return
+			}
+			if !p.Can(perm) {
+				writeError(w, domain.ErrForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func principalFromContext(ctx context.Context) (domain.Principal, bool) {
+	p, ok := ctx.Value(principalKey).(domain.Principal)
+	return p, ok
+}
+
+// UserAuth valida o token de usuário (loja) e injeta o user_id no contexto.
+func UserAuth(auth *application.UserAuthService) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token, ok := bearerToken(r)
+			if !ok {
+				writeError(w, domain.ErrUnauthorized)
+				return
+			}
 			id, err := auth.ValidateToken(token)
 			if err != nil {
 				writeError(w, err)
 				return
 			}
-			ctx := context.WithValue(r.Context(), adminIDKey, id)
+			ctx := context.WithValue(r.Context(), userIDKey, id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func userIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(userIDKey).(string)
+	return id
 }
