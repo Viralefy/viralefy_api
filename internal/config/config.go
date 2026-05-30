@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	Port         string
+	BindHost     string
 	DatabaseURL  string
 	JWTSecret    string
 	JWTTTL       time.Duration
@@ -28,12 +29,16 @@ type Config struct {
 
 func Load() (Config, error) {
 	port := getenv("PORT", "8080")
+	// Default seguro: só localhost. Production fica atrás do Caddy. Para expor
+	// externamente sem proxy, defina BIND_HOST=0.0.0.0 explicitamente.
+	bindHost := getenv("BIND_HOST", "127.0.0.1")
 	db := getenv("DATABASE_URL", "postgres://viralefy:viralefy@localhost:5432/viralefy?sslmode=disable")
 	secret := getenv("JWT_SECRET", "change-me-in-production-min-32-chars!!")
 	ttlHours, _ := strconv.Atoi(getenv("JWT_TTL_HOURS", "24"))
 	cors := getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
 	cfg := Config{
 		Port:         port,
+		BindHost:     bindHost,
 		DatabaseURL:  db,
 		JWTSecret:    secret,
 		JWTTTL:       time.Duration(ttlHours) * time.Hour,

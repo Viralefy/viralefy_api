@@ -84,10 +84,11 @@ func main() {
 	}
 
 	router := httphandler.NewRouter(h, cfg.CORSOrigins, httphandler.AdminAuth(authSvc), httphandler.UserAuth(userAuthSvc))
-	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
+	addr := cfg.BindHost + ":" + cfg.Port
+	srv := &http.Server{Addr: addr, Handler: router}
 
 	go func() {
-		log.Printf("viralefy_api listening on :%s", cfg.Port)
+		log.Printf("viralefy_api listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
