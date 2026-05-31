@@ -2,11 +2,11 @@ package application
 
 import (
 	"context"
-	"log"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -245,7 +245,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 				Config:      gw.Config,
 			})
 			if perr != nil {
-				log.Printf("checkout: provider %s falhou: %v", gw.Provider, perr)
+				observability.FromContext(ctx).Warn("checkout: payment provider failed",
+					"provider", gw.Provider,
+					"error", perr.Error(),
+				)
 			} else {
 				paymentURL = charge.PaymentURL
 				paymentExtra = charge.Extra
@@ -360,11 +363,14 @@ func (s *CheckoutService) sendCheckoutEmail(
 
 	subject, html, text, err := BuildCheckoutEmail(data)
 	if err != nil {
-		log.Printf("checkout: erro renderizando e-mail: %v", err)
+		observability.FromContext(ctx).Error("checkout: render email failed", "error", err.Error())
 		return false
 	}
 	if err := s.email.Send(ctx, EmailMessage{To: to, Subject: subject, TextBody: text, HTMLBody: html}); err != nil {
-		log.Printf("checkout: falha ao enviar e-mail para %s: %v", to, err)
+		observability.FromContext(ctx).Error("checkout: send email failed",
+			"to_masked", observability.MaskEmail(to),
+			"error", err.Error(),
+		)
 		return false
 	}
 	return true

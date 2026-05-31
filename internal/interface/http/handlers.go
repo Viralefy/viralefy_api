@@ -3,13 +3,13 @@ package http
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/domain"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
 type Handlers struct {
@@ -620,59 +620,79 @@ func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) 
 // --- Webhooks (público, verificados por assinatura) --- //
 
 func (h *Handlers) WooviWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := observability.FromContext(r.Context()).With("provider", "woovi")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("woovi", "bad_request").Inc()
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
 	gw, err := h.Gateways.GetActiveByProvider(r.Context(), "woovi")
 	if err != nil || gw == nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("woovi", "no_gateway").Inc()
 		writeError(w, domain.ErrNotFound)
 		return
 	}
 	if err := payment.VerifyWooviWebhook(body, r.Header.Get("x-webhook-signature"), gw.Config["webhook_secret"]); err != nil {
-		log.Printf("webhook woovi inválido: %v", err)
+		observability.GatewayCallbacksTotal.WithLabelValues("woovi", "invalid_signature").Inc()
+		logger.Warn("webhook signature invalid", "error", err.Error())
 		writeError(w, domain.ErrUnauthorized)
 		return
 	}
 	ev, err := payment.ParseWooviEvent(body)
 	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("woovi", "parse_error").Inc()
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
 	if ev.IsPaid() {
 		if _, err := h.PaymentReceiver.ConfirmByExternalRef(r.Context(), ev.Charge.Identifier); err != nil {
-			log.Printf("woovi: ConfirmByExternalRef falhou: %v", err)
+			observability.GatewayCallbacksTotal.WithLabelValues("woovi", "confirm_failed").Inc()
+			logger.Error("ConfirmByExternalRef failed", "error", err.Error())
+		} else {
+			observability.GatewayCallbacksTotal.WithLabelValues("woovi", "confirmed").Inc()
 		}
+	} else {
+		observability.GatewayCallbacksTotal.WithLabelValues("woovi", "ignored").Inc()
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handlers) HeleketWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := observability.FromContext(r.Context()).With("provider", "heleket")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("heleket", "bad_request").Inc()
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
 	gw, err := h.Gateways.GetActiveByProvider(r.Context(), "heleket")
 	if err != nil || gw == nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("heleket", "no_gateway").Inc()
 		writeError(w, domain.ErrNotFound)
 		return
 	}
 	if err := payment.VerifyHeleketWebhook(body, gw.Config["api_key"]); err != nil {
-		log.Printf("webhook heleket inválido: %v", err)
+		observability.GatewayCallbacksTotal.WithLabelValues("heleket", "invalid_signature").Inc()
+		logger.Warn("webhook signature invalid", "error", err.Error())
 		writeError(w, domain.ErrUnauthorized)
 		return
 	}
 	ev, err := payment.ParseHeleketEvent(body)
 	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("heleket", "parse_error").Inc()
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
 	if ev.IsPaid() {
 		if _, err := h.PaymentReceiver.ConfirmByExternalRef(r.Context(), ev.UUID); err != nil {
-			log.Printf("heleket: ConfirmByExternalRef falhou: %v", err)
+			observability.GatewayCallbacksTotal.WithLabelValues("heleket", "confirm_failed").Inc()
+			logger.Error("ConfirmByExternalRef failed", "error", err.Error())
+		} else {
+			observability.GatewayCallbacksTotal.WithLabelValues("heleket", "confirmed").Inc()
 		}
+	} else {
+		observability.GatewayCallbacksTotal.WithLabelValues("heleket", "ignored").Inc()
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -740,6 +760,21 @@ func Health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func Ready(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+// ReadyHandler devolve um http.Handler que executa `check` (tipicamente db.Ping).
+// 200 quando check==nil ou check() retorna nil; 503 caso contrário.
+// O response não vaza o erro pra fora — só status e mensagem genérica. O erro
+// completo vai pro log estruturado.
+func ReadyHandler(check ReadyChecker) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if check != nil {
+			if err := check(r); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status": "unavailable",
+					"reason": "dependency check failed",
+				})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 }

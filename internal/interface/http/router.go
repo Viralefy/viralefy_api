@@ -6,14 +6,32 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
-func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth, optionalUserAuth func(http.Handler) http.Handler) http.Handler {
+// ReadyChecker é a dependência opcional do /ready: deve devolver nil quando o
+// processo está pronto para tráfego (ex.: db.Ping). Pode ser nil — neste caso
+// /ready vira liveness simples e devolve 200.
+type ReadyChecker func(r *http.Request) error
+
+func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth, userAuth, optionalUserAuth func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+	// OTel HTTP middleware: cria span para cada request, propaga W3C trace
+	// context, popula trace_id no contexto. Tem que vir ANTES do nosso
+	// ObservabilityMiddleware, que lê o span do contexto.
+	r.Use(func(next http.Handler) http.Handler {
+		return otelhttp.NewHandler(next, "viralefy-api",
+			otelhttp.WithSpanNameFormatter(func(_ string, req *http.Request) string {
+				return req.Method + " " + req.URL.Path
+			}),
+		)
+	})
+	r.Use(ObservabilityMiddleware)
 	r.Use(middleware.Recoverer)
 
 	r.Use(cors.Handler(cors.Options{
@@ -26,7 +44,8 @@ func NewRouter(h *Handlers, corsOrigins []string, adminAuth, userAuth, optionalU
 	}))
 
 	r.Get("/health", Health)
-	r.Get("/ready", Ready)
+	r.Method(http.MethodGet, "/ready", ReadyHandler(ready))
+	r.Method(http.MethodGet, "/metrics", observability.MetricsHandler())
 
 	r.Route("/v1", func(r chi.Router) {
 		// Público

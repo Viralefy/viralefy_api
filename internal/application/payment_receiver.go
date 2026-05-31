@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
 // PaymentReceiver é o ponto único de entrada para confirmações de pagamento
@@ -37,7 +37,11 @@ func (r *PaymentReceiver) ConfirmByExternalRef(ctx context.Context, ref string) 
 		if _, err := r.invoiceSvc.AdminMarkPaid(ctx, inv.ID); err != nil {
 			return "invoice", err
 		}
-		log.Printf("payment_receiver: invoice %s confirmada via external_ref=%s", inv.ID, ref)
+		observability.FromContext(ctx).Info("invoice confirmed",
+			"component", "payment_receiver",
+			"invoice_id", inv.ID,
+			"external_ref", ref,
+		)
 		return "invoice", nil
 	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return "", err
@@ -51,7 +55,11 @@ func (r *PaymentReceiver) ConfirmByExternalRef(ctx context.Context, ref string) 
 		if err := r.orders.UpdateStatus(ctx, ord.ID, domain.OrderStatusPaid, &extRef); err != nil {
 			return "order", err
 		}
-		log.Printf("payment_receiver: order %s marcada como paga via external_ref=%s", ord.ID, ref)
+		observability.FromContext(ctx).Info("order marked paid",
+			"component", "payment_receiver",
+			"order_id", ord.ID,
+			"external_ref", ref,
+		)
 		return "order", nil
 	}
 	return "", nil

@@ -2,10 +2,10 @@ package application
 
 import (
 	"context"
-	"log"
 
 	"github.com/google/uuid"
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
 // InvoiceService orquestra cobranças de recarga de créditos. Quando paga,
@@ -90,7 +90,10 @@ func (s *InvoiceService) Create(ctx context.Context, in CreateInvoiceInput) (*do
 				Config:      gw.Config,
 			})
 			if perr != nil {
-				log.Printf("invoice: provider %s falhou: %v", gw.Provider, perr)
+				observability.FromContext(ctx).Warn("invoice: payment provider failed",
+					"provider", gw.Provider,
+					"error", perr.Error(),
+				)
 			} else {
 				inv.ExternalRef = &charge.ExternalRef
 				inv.PaymentURL = &charge.PaymentURL

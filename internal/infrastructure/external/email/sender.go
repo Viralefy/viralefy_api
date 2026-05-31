@@ -6,11 +6,11 @@ package email
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/smtp"
 	"strings"
 
 	"github.com/viralefy/viralefy_api/internal/application"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
 type Config struct {
@@ -42,17 +42,17 @@ func New(cfg Config) application.EmailSender {
 		if from == "" {
 			from = "onboarding@resend.dev"
 		}
-		log.Printf("email: usando Resend (from=%s)", from)
+		observability.L().Info("email provider selected", "provider", "resend", "from", from)
 		return &ResendSender{apiKey: cfg.ResendAPIKey, from: from, fromName: cfg.ResendFromName, baseURL: base}
 	}
 	if strings.TrimSpace(cfg.Addr) == "" {
-		log.Printf("email: nenhum provedor configurado — usando LogSender (dev)")
+		observability.L().Warn("email provider not configured; using LogSender (dev only)")
 		return &LogSender{}
 	}
 	if cfg.From == "" {
 		cfg.From = "no-reply@viralefy.local"
 	}
-	log.Printf("email: usando SMTP (%s)", cfg.Addr)
+	observability.L().Info("email provider selected", "provider", "smtp", "addr", cfg.Addr)
 	return &SMTPSender{cfg: cfg}
 }
 
@@ -99,6 +99,10 @@ func buildMessage(from, to, subject, body string) []byte {
 type LogSender struct{}
 
 func (l *LogSender) Send(_ context.Context, msg application.EmailMessage) error {
-	log.Printf("email (log-only): to=%s subject=%q (corpo omitido)", msg.To, msg.Subject)
+	// PII: mascaramos o destinatário pra não vazar e-mail em log estruturado.
+	observability.L().Info("email (log-only)",
+		"to_masked", observability.MaskEmail(msg.To),
+		"subject", msg.Subject,
+	)
 	return nil
 }
