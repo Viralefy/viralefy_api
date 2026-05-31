@@ -230,28 +230,23 @@ func seedPlans(ctx context.Context, db *DB) error {
 	}
 	for _, p := range plans {
 		var existingID string
-		// Para `servicos`, a natural-key (category, platform, target_type, qty=1)
-		// é a mesma pra todos os serviços, então caímos em UPSERT por nome.
-		// Para o resto, natural-key tuple é único por plano.
-		if p.category == "servicos" {
-			_ = db.pool.QueryRow(ctx,
-				`SELECT id FROM plans WHERE category=$1 AND name=$2 LIMIT 1`,
-				p.category, p.name).Scan(&existingID)
-		} else {
-			_ = db.pool.QueryRow(ctx,
-				`SELECT id FROM plans
-				 WHERE category=$1 AND platform=$2 AND target_type=$3 AND followers_qty=$4
-				 LIMIT 1`,
-				p.category, p.platform, p.target, p.qty).Scan(&existingID)
-		}
+		// UPSERT por (category, name) — name é o identificador único do plano
+		// dentro da categoria. Antes usávamos natural-key (category, platform,
+		// target_type, qty) mas em engajamento likes/comments/shares/saves
+		// no mesmo qty colidiam (todos publication). UNIQUE em (category, name)
+		// é o equivalente físico na DB (plans_category_name_key).
+		_ = db.pool.QueryRow(ctx,
+			`SELECT id FROM plans WHERE category=$1 AND name=$2 LIMIT 1`,
+			p.category, p.name).Scan(&existingID)
 		cents := int(p.brl*100 + 0.5)
 		if existingID != "" {
-			// Refresh name/description/price/sort_order so the seed remains the
-			// authoritative source for these fields after rename/recategorization.
+			// Refresh description/price/sort_order/platform/target_type. Name fica
+			// como está (lookup key), mas o resto vira authoritativo do seed.
 			_, _ = db.pool.Exec(ctx,
-				`UPDATE plans SET name=$2, description=$3, price_cents=$4, sort_order=$5
+				`UPDATE plans SET description=$2, price_cents=$3, sort_order=$4,
+				                  platform=$5, target_type=$6, followers_qty=$7
 				 WHERE id=$1`,
-				existingID, p.name, p.desc, cents, p.order)
+				existingID, p.desc, cents, p.order, p.platform, p.target, p.qty)
 			if err := seedPlanPrices(ctx, db, existingID, p.brl); err != nil {
 				return err
 			}
