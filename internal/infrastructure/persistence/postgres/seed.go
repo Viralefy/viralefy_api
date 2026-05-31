@@ -73,16 +73,10 @@ func seedCategories(ctx context.Context, db *DB) error {
 		code, label string
 		order       int
 	}{
-		{"seguidores", "Seguidores", 1},
-		{"engajamento", "Engajamento", 2},
-		{"visualizacoes", "Visualizações", 3},
-		{"curtidas", "Curtidas", 5},
-		{"comentarios", "Comentários", 6},
-		{"compartilhamentos", "Compartilhamentos", 7},
-		{"salvamentos", "Salvamentos", 8},
-		{"reels", "Reels", 9},
-		{"stories", "Stories", 10},
-		{"servicos", "Serviços", 4},
+		{"seguidores", "Followers", 1},
+		{"engajamento", "Engagement", 2},
+		{"visualizacoes", "Views", 3},
+		{"servicos", "Premium services", 4},
 	}
 	for _, c := range cats {
 		_, err := db.pool.Exec(ctx, `
@@ -124,8 +118,9 @@ func seedCurrencies(ctx context.Context, db *DB) error {
 }
 
 func seedPlans(ctx context.Context, db *DB) error {
-	// Idempotente por (name, category). Permite acrescentar planos novos em
-	// versões futuras sem destruir os existentes (preços manuais sobrevivem).
+	// Idempotent by natural-key tuple (category, platform, target_type, followers_qty).
+	// Re-runs refresh name/description/price/sort_order so the seed stays authoritative
+	// even if labels evolve; manual per-currency overrides on plan_prices are preserved.
 	type planSeed struct {
 		name, desc, category, platform, target string
 		qty                                    int
@@ -134,120 +129,126 @@ func seedPlans(ctx context.Context, db *DB) error {
 	}
 	plans := []planSeed{
 		// ===== INSTAGRAM ===== //
-		// ---- Seguidores (perfil) ----
-		{"100 seguidores Instagram", "Ideal para testar", "seguidores", "instagram", "profile", 100, 9.90, 1},
-		{"250 seguidores Instagram", "Primeiro impulso", "seguidores", "instagram", "profile", 250, 18.90, 2},
-		{"500 seguidores Instagram", "Crescimento inicial", "seguidores", "instagram", "profile", 500, 35.90, 3},
-		{"1.000 seguidores Instagram", "Mais alcance", "seguidores", "instagram", "profile", 1000, 69.90, 4},
-		{"2.500 seguidores Instagram", "Tração", "seguidores", "instagram", "profile", 2500, 149.90, 5},
-		{"5.000 seguidores Instagram", "Comunidade", "seguidores", "instagram", "profile", 5000, 249.90, 6},
-		{"10.000 seguidores Instagram", "Escala", "seguidores", "instagram", "profile", 10000, 399.90, 7},
-		{"25.000 seguidores Instagram", "Microinfluência", "seguidores", "instagram", "profile", 25000, 899.90, 8},
-		{"50.000 seguidores Instagram", "Influência consolidada", "seguidores", "instagram", "profile", 50000, 1699.90, 9},
-		{"100.000 seguidores Instagram", "Autoridade", "seguidores", "instagram", "profile", 100000, 3199.90, 10},
-		{"250.000 seguidores Instagram", "Marca pessoal", "seguidores", "instagram", "profile", 250000, 6499.90, 11},
-		{"500.000 seguidores Instagram", "Top tier", "seguidores", "instagram", "profile", 500000, 8999.90, 12},
-		{"1.000.000 seguidores Instagram", "Máximo alcance", "seguidores", "instagram", "profile", 1000000, 11999.99, 13},
+		// ---- Followers (profile) — IG sort_order 1-13 ----
+		{"100 followers Instagram", "Ideal for testing", "seguidores", "instagram", "profile", 100, 9.90, 1},
+		{"250 followers Instagram", "First push", "seguidores", "instagram", "profile", 250, 18.90, 2},
+		{"500 followers Instagram", "Initial growth", "seguidores", "instagram", "profile", 500, 35.90, 3},
+		{"1,000 followers Instagram", "More reach", "seguidores", "instagram", "profile", 1000, 69.90, 4},
+		{"2,500 followers Instagram", "Traction", "seguidores", "instagram", "profile", 2500, 149.90, 5},
+		{"5,000 followers Instagram", "Community", "seguidores", "instagram", "profile", 5000, 249.90, 6},
+		{"10,000 followers Instagram", "Scale", "seguidores", "instagram", "profile", 10000, 399.90, 7},
+		{"25,000 followers Instagram", "Micro-influencer", "seguidores", "instagram", "profile", 25000, 899.90, 8},
+		{"50,000 followers Instagram", "Established influence", "seguidores", "instagram", "profile", 50000, 1699.90, 9},
+		{"100,000 followers Instagram", "Authority", "seguidores", "instagram", "profile", 100000, 3199.90, 10},
+		{"250,000 followers Instagram", "Personal brand", "seguidores", "instagram", "profile", 250000, 6499.90, 11},
+		{"500,000 followers Instagram", "Top tier", "seguidores", "instagram", "profile", 500000, 8999.90, 12},
+		{"1,000,000 followers Instagram", "Maximum reach", "seguidores", "instagram", "profile", 1000000, 11999.99, 13},
 
-		// ---- Curtidas IG (publicação) ----
-		{"100 curtidas Instagram", "Boost inicial", "curtidas", "instagram", "publication", 100, 4.90, 1},
-		{"500 curtidas Instagram", "Engajamento médio", "curtidas", "instagram", "publication", 500, 14.90, 2},
-		{"1.000 curtidas Instagram", "Alta visibilidade", "curtidas", "instagram", "publication", 1000, 24.90, 3},
-		{"5.000 curtidas Instagram", "Viralizando", "curtidas", "instagram", "publication", 5000, 89.90, 4},
-		{"10.000 curtidas Instagram", "Em alta", "curtidas", "instagram", "publication", 10000, 149.90, 5},
-		{"50.000 curtidas Instagram", "Top do feed", "curtidas", "instagram", "publication", 50000, 599.90, 6},
-		{"100.000 curtidas Instagram", "Explosão", "curtidas", "instagram", "publication", 100000, 999.90, 7},
+		// ---- Followers TikTok (profile) — sort_order 100-107 ----
+		{"500 followers TikTok", "First push", "seguidores", "tiktok", "profile", 500, 29.90, 100},
+		{"1,000 followers TikTok", "Takeoff", "seguidores", "tiktok", "profile", 1000, 54.90, 101},
+		{"5,000 followers TikTok", "Solid growth", "seguidores", "tiktok", "profile", 5000, 199.90, 102},
+		{"10,000 followers TikTok", "TikTok scale", "seguidores", "tiktok", "profile", 10000, 349.90, 103},
+		{"50,000 followers TikTok", "Creator", "seguidores", "tiktok", "profile", 50000, 1499.90, 104},
+		{"100,000 followers TikTok", "TikTok influence", "seguidores", "tiktok", "profile", 100000, 2799.90, 105},
+		{"500,000 followers TikTok", "Top creator", "seguidores", "tiktok", "profile", 500000, 7999.90, 106},
+		{"1,000,000 followers TikTok", "Full viral", "seguidores", "tiktok", "profile", 1000000, 10999.90, 107},
 
-		// ---- Comentários IG (publicação) ----
-		{"50 comentários Instagram", "Conversa inicial", "comentarios", "instagram", "publication", 50, 19.90, 1},
-		{"100 comentários Instagram", "Engajamento real", "comentarios", "instagram", "publication", 100, 34.90, 2},
-		{"250 comentários Instagram", "Discussão ativa", "comentarios", "instagram", "publication", 250, 79.90, 3},
-		{"500 comentários Instagram", "Comunidade", "comentarios", "instagram", "publication", 500, 149.90, 4},
-		{"1.000 comentários Instagram", "Viral", "comentarios", "instagram", "publication", 1000, 269.90, 5},
+		// ===== ENGAGEMENT ===== //
+		// ---- IG likes (publication) — sort_order 1-7 ----
+		{"100 likes Instagram", "Initial boost", "engajamento", "instagram", "publication", 100, 4.90, 1},
+		{"500 likes Instagram", "Average engagement", "engajamento", "instagram", "publication", 500, 14.90, 2},
+		{"1,000 likes Instagram", "High visibility", "engajamento", "instagram", "publication", 1000, 24.90, 3},
+		{"5,000 likes Instagram", "Going viral", "engajamento", "instagram", "publication", 5000, 89.90, 4},
+		{"10,000 likes Instagram", "Trending", "engajamento", "instagram", "publication", 10000, 149.90, 5},
+		{"50,000 likes Instagram", "Top of feed", "engajamento", "instagram", "publication", 50000, 599.90, 6},
+		{"100,000 likes Instagram", "Explosive", "engajamento", "instagram", "publication", 100000, 999.90, 7},
 
-		// ---- Compartilhamentos IG (publicação) ----
-		{"100 compartilhamentos Instagram", "Espalha a notícia", "compartilhamentos", "instagram", "publication", 100, 12.90, 1},
-		{"500 compartilhamentos Instagram", "Reach extra", "compartilhamentos", "instagram", "publication", 500, 49.90, 2},
-		{"1.000 compartilhamentos Instagram", "Conteúdo em alta", "compartilhamentos", "instagram", "publication", 1000, 89.90, 3},
-		{"5.000 compartilhamentos Instagram", "Viralidade real", "compartilhamentos", "instagram", "publication", 5000, 399.90, 4},
+		// ---- IG comments (publication) — sort_order 10-14 ----
+		{"50 comments Instagram", "Conversation starter", "engajamento", "instagram", "publication", 50, 19.90, 10},
+		{"100 comments Instagram", "Real engagement", "engajamento", "instagram", "publication", 100, 34.90, 11},
+		{"250 comments Instagram", "Active discussion", "engajamento", "instagram", "publication", 250, 79.90, 12},
+		{"500 comments Instagram", "Community", "engajamento", "instagram", "publication", 500, 149.90, 13},
+		{"1,000 comments Instagram", "Viral", "engajamento", "instagram", "publication", 1000, 269.90, 14},
 
-		// ---- Salvamentos IG (publicação) ----
-		{"100 salvamentos Instagram", "Conteúdo de valor", "salvamentos", "instagram", "publication", 100, 9.90, 1},
-		{"500 salvamentos Instagram", "Referência", "salvamentos", "instagram", "publication", 500, 39.90, 2},
-		{"1.000 salvamentos Instagram", "Top of mind", "salvamentos", "instagram", "publication", 1000, 69.90, 3},
-		{"5.000 salvamentos Instagram", "Conteúdo evergreen", "salvamentos", "instagram", "publication", 5000, 299.90, 4},
+		// ---- IG shares (publication) — sort_order 20-23 ----
+		{"100 shares Instagram", "Spread the word", "engajamento", "instagram", "publication", 100, 12.90, 20},
+		{"500 shares Instagram", "Extra reach", "engajamento", "instagram", "publication", 500, 49.90, 21},
+		{"1,000 shares Instagram", "Trending content", "engajamento", "instagram", "publication", 1000, 89.90, 22},
+		{"5,000 shares Instagram", "Real virality", "engajamento", "instagram", "publication", 5000, 399.90, 23},
 
-		// ---- Reels IG (publicação) ----
-		{"1.000 views em Reels Instagram", "Pickup inicial", "reels", "instagram", "publication", 1000, 4.90, 1},
-		{"10.000 views em Reels Instagram", "Em alta", "reels", "instagram", "publication", 10000, 12.90, 2},
-		{"50.000 views em Reels Instagram", "Trending", "reels", "instagram", "publication", 50000, 49.90, 3},
-		{"100.000 views em Reels Instagram", "Boom", "reels", "instagram", "publication", 100000, 89.90, 4},
-		{"500.000 views em Reels Instagram", "Viral", "reels", "instagram", "publication", 500000, 379.90, 5},
-		{"1.000.000 views em Reels Instagram", "Hit nacional", "reels", "instagram", "publication", 1000000, 699.90, 6},
+		// ---- IG saves (publication) — sort_order 30-33 ----
+		{"100 saves Instagram", "Valuable content", "engajamento", "instagram", "publication", 100, 9.90, 30},
+		{"500 saves Instagram", "Reference material", "engajamento", "instagram", "publication", 500, 39.90, 31},
+		{"1,000 saves Instagram", "Top of mind", "engajamento", "instagram", "publication", 1000, 69.90, 32},
+		{"5,000 saves Instagram", "Evergreen content", "engajamento", "instagram", "publication", 5000, 299.90, 33},
 
-		// ---- Stories IG (perfil — Stories somam por conta) ----
-		{"500 views em Stories Instagram", "Boost de Stories", "stories", "instagram", "profile", 500, 6.90, 1},
-		{"2.000 views em Stories Instagram", "Alta presença", "stories", "instagram", "profile", 2000, 19.90, 2},
-		{"10.000 views em Stories Instagram", "Massivo", "stories", "instagram", "profile", 10000, 79.90, 3},
+		// ---- TikTok likes (publication = video) — sort_order 40-45 ----
+		{"500 likes TikTok", "Video boost", "engajamento", "tiktok", "publication", 500, 9.90, 40},
+		{"1,000 likes TikTok", "Visibility", "engajamento", "tiktok", "publication", 1000, 19.90, 41},
+		{"5,000 likes TikTok", "Trending", "engajamento", "tiktok", "publication", 5000, 79.90, 42},
+		{"10,000 likes TikTok", "For You page", "engajamento", "tiktok", "publication", 10000, 129.90, 43},
+		{"50,000 likes TikTok", "Viral", "engajamento", "tiktok", "publication", 50000, 549.90, 44},
+		{"100,000 likes TikTok", "Explosive", "engajamento", "tiktok", "publication", 100000, 899.90, 45},
 
-		// ===== TIKTOK ===== //
-		// ---- Seguidores TikTok (perfil) ----
-		{"500 seguidores TikTok", "Primeiro empurrão", "seguidores", "tiktok", "profile", 500, 29.90, 14},
-		{"1.000 seguidores TikTok", "Decola", "seguidores", "tiktok", "profile", 1000, 54.90, 15},
-		{"5.000 seguidores TikTok", "Crescimento sólido", "seguidores", "tiktok", "profile", 5000, 199.90, 16},
-		{"10.000 seguidores TikTok", "Escala TikTok", "seguidores", "tiktok", "profile", 10000, 349.90, 17},
-		{"50.000 seguidores TikTok", "Creator", "seguidores", "tiktok", "profile", 50000, 1499.90, 18},
-		{"100.000 seguidores TikTok", "Influência TikTok", "seguidores", "tiktok", "profile", 100000, 2799.90, 19},
-		{"500.000 seguidores TikTok", "Top creator", "seguidores", "tiktok", "profile", 500000, 7999.90, 20},
-		{"1.000.000 seguidores TikTok", "Viral total", "seguidores", "tiktok", "profile", 1000000, 10999.90, 21},
+		// ---- TikTok comments (publication) — sort_order 50-51 ----
+		{"100 comments TikTok", "Conversation", "engajamento", "tiktok", "publication", 100, 29.90, 50},
+		{"500 comments TikTok", "Discussion", "engajamento", "tiktok", "publication", 500, 119.90, 51},
 
-		// ---- Curtidas TikTok (publicação = vídeo) ----
-		{"500 curtidas TikTok", "Boost de vídeo", "curtidas", "tiktok", "publication", 500, 9.90, 8},
-		{"1.000 curtidas TikTok", "Visibilidade", "curtidas", "tiktok", "publication", 1000, 19.90, 9},
-		{"5.000 curtidas TikTok", "Trending", "curtidas", "tiktok", "publication", 5000, 79.90, 10},
-		{"10.000 curtidas TikTok", "Para você", "curtidas", "tiktok", "publication", 10000, 129.90, 11},
-		{"50.000 curtidas TikTok", "Viral", "curtidas", "tiktok", "publication", 50000, 549.90, 12},
-		{"100.000 curtidas TikTok", "Explosão", "curtidas", "tiktok", "publication", 100000, 899.90, 13},
+		// ---- TikTok shares (publication) — sort_order 60-61 ----
+		{"500 shares TikTok", "Extra reach", "engajamento", "tiktok", "publication", 500, 49.90, 60},
+		{"5,000 shares TikTok", "Virality", "engajamento", "tiktok", "publication", 5000, 349.90, 61},
 
-		// ---- Views TikTok (publicação) ----
-		{"10.000 views em vídeo TikTok", "Pickup", "visualizacoes", "tiktok", "publication", 10000, 9.90, 3},
-		{"100.000 views em vídeo TikTok", "Trending", "visualizacoes", "tiktok", "publication", 100000, 59.90, 4},
-		{"1.000.000 views em vídeo TikTok", "Viral", "visualizacoes", "tiktok", "publication", 1000000, 399.90, 5},
+		// ===== VIEWS ===== //
+		// ---- IG Reels views (publication) — sort_order 1-6 ----
+		{"1,000 Reels views Instagram", "Initial pickup", "visualizacoes", "instagram", "publication", 1000, 4.90, 1},
+		{"10,000 Reels views Instagram", "Trending", "visualizacoes", "instagram", "publication", 10000, 12.90, 2},
+		{"50,000 Reels views Instagram", "Hot", "visualizacoes", "instagram", "publication", 50000, 49.90, 3},
+		{"100,000 Reels views Instagram", "Boom", "visualizacoes", "instagram", "publication", 100000, 89.90, 4},
+		{"500,000 Reels views Instagram", "Viral", "visualizacoes", "instagram", "publication", 500000, 379.90, 5},
+		{"1,000,000 Reels views Instagram", "National hit", "visualizacoes", "instagram", "publication", 1000000, 699.90, 6},
 
-		// ---- Comentários TikTok (publicação) ----
-		{"100 comentários TikTok", "Conversa", "comentarios", "tiktok", "publication", 100, 29.90, 6},
-		{"500 comentários TikTok", "Discussão", "comentarios", "tiktok", "publication", 500, 119.90, 7},
+		// ---- IG Story views (profile — Stories aggregate per account) — sort_order 10-12 ----
+		{"500 Story views Instagram", "Story boost", "visualizacoes", "instagram", "profile", 500, 6.90, 10},
+		{"2,000 Story views Instagram", "High presence", "visualizacoes", "instagram", "profile", 2000, 19.90, 11},
+		{"10,000 Story views Instagram", "Massive", "visualizacoes", "instagram", "profile", 10000, 79.90, 12},
 
-		// ---- Compartilhamentos TikTok (publicação) ----
-		{"500 compartilhamentos TikTok", "Reach extra", "compartilhamentos", "tiktok", "publication", 500, 49.90, 5},
-		{"5.000 compartilhamentos TikTok", "Viralidade", "compartilhamentos", "tiktok", "publication", 5000, 349.90, 6},
+		// ---- TikTok video views (publication) — sort_order 100-102 ----
+		{"10,000 video views TikTok", "Pickup", "visualizacoes", "tiktok", "publication", 10000, 9.90, 100},
+		{"100,000 video views TikTok", "Trending", "visualizacoes", "tiktok", "publication", 100000, 59.90, 101},
+		{"1,000,000 video views TikTok", "Viral", "visualizacoes", "tiktok", "publication", 1000000, 399.90, 102},
 
-		// ===== Visualizações IG legacy =====
-		{"Views 10k", "10.000 visualizações em posts", "visualizacoes", "instagram", "publication", 10000, 12.90, 1},
-		{"Views 50k", "50.000 visualizações em posts", "visualizacoes", "instagram", "publication", 50000, 49.90, 2},
-
-		// ===== Engajamento combinado IG =====
-		{"Pacote engajamento 1k", "1k curtidas + 50 coments", "engajamento", "instagram", "publication", 1000, 39.90, 1},
-		{"Pacote engajamento 5k", "5k curtidas + 200 coments + 500 shares", "engajamento", "instagram", "publication", 5000, 159.90, 2},
-
-		// ===== Serviços (consultoria — perfil, multi-plataforma) =====
-		{"Auditoria de perfil", "Diagnóstico + recomendações", "servicos", "instagram", "profile", 1, 149.90, 1},
-		{"Gestão Mensal", "Gestão de perfil + estratégia", "servicos", "instagram", "profile", 1, 299.90, 2},
-		{"Lançamento de produto", "Campanha integrada em 30 dias", "servicos", "instagram", "profile", 1, 1499.90, 3},
+		// ===== PREMIUM SERVICES (consulting — profile, multi-platform) =====
+		{"Profile audit", "Diagnosis + recommendations", "servicos", "instagram", "profile", 1, 149.90, 1},
+		{"Monthly management", "Profile management + strategy", "servicos", "instagram", "profile", 1, 299.90, 2},
+		{"Product launch", "Integrated 30-day campaign", "servicos", "instagram", "profile", 1, 1499.90, 3},
+		{"Account recovery", "Recovery support for suspended or hacked accounts", "servicos", "instagram", "profile", 1, 399.90, 4},
+		{"New account setup", "Full setup and optimization for a new account", "servicos", "instagram", "profile", 1, 249.90, 5},
+		{"Anti-shadowban package", "Shadowban diagnosis and removal plan", "servicos", "instagram", "profile", 1, 349.90, 6},
+		{"Competitor analysis", "In-depth analysis of direct competitors", "servicos", "instagram", "profile", 1, 199.90, 7},
+		{"Verification support", "Support to apply for the verified badge", "servicos", "instagram", "profile", 1, 599.90, 8},
 	}
 	for _, p := range plans {
 		var existingID string
 		_ = db.pool.QueryRow(ctx,
-			`SELECT id FROM plans WHERE name=$1 AND category=$2 LIMIT 1`,
-			p.name, p.category).Scan(&existingID)
+			`SELECT id FROM plans
+			 WHERE category=$1 AND platform=$2 AND target_type=$3 AND followers_qty=$4
+			 LIMIT 1`,
+			p.category, p.platform, p.target, p.qty).Scan(&existingID)
+		cents := int(p.brl*100 + 0.5)
 		if existingID != "" {
-			// Já existe — só atualiza platform/target_type pra refletir o seed atual.
-			_, _ = db.pool.Exec(ctx, `UPDATE plans SET platform=$2, target_type=$3 WHERE id=$1`,
-				existingID, p.platform, p.target)
+			// Refresh name/description/price/sort_order so the seed remains the
+			// authoritative source for these fields after rename/recategorization.
+			_, _ = db.pool.Exec(ctx,
+				`UPDATE plans SET name=$2, description=$3, price_cents=$4, sort_order=$5
+				 WHERE id=$1`,
+				existingID, p.name, p.desc, cents, p.order)
+			if err := seedPlanPrices(ctx, db, existingID, p.brl); err != nil {
+				return err
+			}
 			continue
 		}
 		id := uuid.New().String()
-		cents := int(p.brl*100 + 0.5)
 		_, err := db.pool.Exec(ctx, `
 			INSERT INTO plans (id, name, description, category, platform, target_type, followers_qty, price_cents, currency, active, sort_order)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'BRL',true,$9)`,
