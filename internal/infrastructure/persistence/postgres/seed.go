@@ -105,11 +105,13 @@ func seedCurrencies(ctx context.Context, db *DB) error {
 		decimals, order                      int
 		display                              bool
 	}{
-		{"BRL", "Real", "R$", "fiat", "BRL", 1.0, 2, 1, true},
+		// USDT é a moeda padrão da storefront. Símbolo "$" porque é 1:1
+		// com USD e ficaria estranho mostrar "₮ 5,00" pro mundo todo.
+		{"USDT", "Tether", "$", "crypto", "USDT", 0.185, 2, 1, true},
 		{"USD", "Dólar", "$", "fiat", "USDT", 0.185, 2, 2, true},
 		{"EUR", "Euro", "€", "fiat", "EUR", 0.17, 2, 3, true},
-		{"BTC", "Bitcoin", "₿", "crypto", "BTC", 0.0000019, 8, 4, true},
-		{"USDT", "Tether", "₮", "crypto", "USDT", 0.185, 2, 5, false},
+		{"BRL", "Real", "R$", "fiat", "BRL", 1.0, 2, 4, true},
+		{"BTC", "Bitcoin", "₿", "crypto", "BTC", 0.0000019, 8, 5, true},
 	}
 	for _, c := range curs {
 		_, err := db.pool.Exec(ctx, `
