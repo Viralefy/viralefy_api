@@ -230,11 +230,20 @@ func seedPlans(ctx context.Context, db *DB) error {
 	}
 	for _, p := range plans {
 		var existingID string
-		_ = db.pool.QueryRow(ctx,
-			`SELECT id FROM plans
-			 WHERE category=$1 AND platform=$2 AND target_type=$3 AND followers_qty=$4
-			 LIMIT 1`,
-			p.category, p.platform, p.target, p.qty).Scan(&existingID)
+		// Para `servicos`, a natural-key (category, platform, target_type, qty=1)
+		// é a mesma pra todos os serviços, então caímos em UPSERT por nome.
+		// Para o resto, natural-key tuple é único por plano.
+		if p.category == "servicos" {
+			_ = db.pool.QueryRow(ctx,
+				`SELECT id FROM plans WHERE category=$1 AND name=$2 LIMIT 1`,
+				p.category, p.name).Scan(&existingID)
+		} else {
+			_ = db.pool.QueryRow(ctx,
+				`SELECT id FROM plans
+				 WHERE category=$1 AND platform=$2 AND target_type=$3 AND followers_qty=$4
+				 LIMIT 1`,
+				p.category, p.platform, p.target, p.qty).Scan(&existingID)
+		}
 		cents := int(p.brl*100 + 0.5)
 		if existingID != "" {
 			// Refresh name/description/price/sort_order so the seed remains the
