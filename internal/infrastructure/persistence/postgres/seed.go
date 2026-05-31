@@ -75,11 +75,15 @@ func seedCategories(ctx context.Context, db *DB) error {
 	}{
 		{"seguidores_instagram", "Instagram followers", 1},
 		{"seguidores_tiktok", "TikTok followers", 2},
-		{"engajamento_instagram", "Instagram engagement", 3},
-		{"engajamento_tiktok", "TikTok engagement", 4},
-		{"visualizacoes_instagram", "Instagram views", 5},
-		{"visualizacoes_tiktok", "TikTok views", 6},
-		{"servicos", "Premium services", 7},
+		{"curtidas_instagram", "Instagram likes", 3},
+		{"curtidas_tiktok", "TikTok likes", 4},
+		{"comentarios_instagram", "Instagram comments", 5},
+		{"comentarios_tiktok", "TikTok comments", 6},
+		{"compartilhamentos_instagram", "Instagram shares", 7},
+		{"compartilhamentos_tiktok", "TikTok shares", 8},
+		{"visualizacoes_instagram", "Instagram views", 9},
+		{"visualizacoes_tiktok", "TikTok views", 10},
+		{"servicos", "Premium services", 11},
 	}
 	for _, c := range cats {
 		_, err := db.pool.Exec(ctx, `
@@ -164,65 +168,68 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"7,500 followers TikTok", "Real audience", "seguidores_tiktok", "tiktok", "profile", 7500, 170, 75},
 		{"10,000 followers TikTok", "TikTok scale", "seguidores_tiktok", "tiktok", "profile", 10000, 200, 100},
 
-		// ===== INSTAGRAM ENGAGEMENT (publication) =====
-		// Likes
-		{"100 likes Instagram", "Initial boost", "engajamento_instagram", "instagram", "publication", 100, 1, 1},
-		{"250 likes Instagram", "Early traction", "engajamento_instagram", "instagram", "publication", 250, 2, 2},
-		{"500 likes Instagram", "Average engagement", "engajamento_instagram", "instagram", "publication", 500, 3, 5},
-		{"1,000 likes Instagram", "High visibility", "engajamento_instagram", "instagram", "publication", 1000, 5, 10},
-		{"2,500 likes Instagram", "Picking up", "engajamento_instagram", "instagram", "publication", 2500, 11, 25},
-		{"5,000 likes Instagram", "Going viral", "engajamento_instagram", "instagram", "publication", 5000, 20, 50},
-		{"7,500 likes Instagram", "Trending fast", "engajamento_instagram", "instagram", "publication", 7500, 28, 75},
-		{"10,000 likes Instagram", "Trending", "engajamento_instagram", "instagram", "publication", 10000, 35, 100},
-		{"25,000 likes Instagram", "Hot post", "engajamento_instagram", "instagram", "publication", 25000, 80, 250},
-		{"50,000 likes Instagram", "Top of feed", "engajamento_instagram", "instagram", "publication", 50000, 150, 500},
-		{"100,000 likes Instagram", "Explosive", "engajamento_instagram", "instagram", "publication", 100000, 280, 1000},
-		// Comments
-		{"25 comments Instagram", "Light conversation", "engajamento_instagram", "instagram", "publication", 25, 5, 1},
-		{"50 comments Instagram", "Conversation starter", "engajamento_instagram", "instagram", "publication", 50, 9, 2},
-		{"100 comments Instagram", "Real engagement", "engajamento_instagram", "instagram", "publication", 100, 15, 3},
-		{"250 comments Instagram", "Active discussion", "engajamento_instagram", "instagram", "publication", 250, 35, 5},
-		{"500 comments Instagram", "Community talk", "engajamento_instagram", "instagram", "publication", 500, 65, 10},
-		{"1,000 comments Instagram", "Viral debate", "engajamento_instagram", "instagram", "publication", 1000, 120, 20},
-		// Shares
-		{"100 shares Instagram", "Spread the word", "engajamento_instagram", "instagram", "publication", 100, 4, 1},
-		{"250 shares Instagram", "Early diffusion", "engajamento_instagram", "instagram", "publication", 250, 9, 3},
-		{"500 shares Instagram", "Extra reach", "engajamento_instagram", "instagram", "publication", 500, 16, 5},
-		{"1,000 shares Instagram", "Trending content", "engajamento_instagram", "instagram", "publication", 1000, 30, 10},
-		{"2,500 shares Instagram", "Wide reach", "engajamento_instagram", "instagram", "publication", 2500, 70, 25},
-		{"5,000 shares Instagram", "Real virality", "engajamento_instagram", "instagram", "publication", 5000, 130, 50},
-		// Saves
-		{"100 saves Instagram", "Valuable content", "engajamento_instagram", "instagram", "publication", 100, 3, 1},
-		{"250 saves Instagram", "Useful post", "engajamento_instagram", "instagram", "publication", 250, 7, 3},
-		{"500 saves Instagram", "Reference material", "engajamento_instagram", "instagram", "publication", 500, 13, 5},
-		{"1,000 saves Instagram", "Top of mind", "engajamento_instagram", "instagram", "publication", 1000, 25, 10},
-		{"2,500 saves Instagram", "Bookmark-worthy", "engajamento_instagram", "instagram", "publication", 2500, 55, 25},
-		{"5,000 saves Instagram", "Evergreen content", "engajamento_instagram", "instagram", "publication", 5000, 100, 50},
+		// ===== INSTAGRAM LIKES (publication) =====
+		{"100 likes Instagram", "Initial boost", "curtidas_instagram", "instagram", "publication", 100, 1, 1},
+		{"250 likes Instagram", "Early traction", "curtidas_instagram", "instagram", "publication", 250, 2, 2},
+		{"500 likes Instagram", "Average engagement", "curtidas_instagram", "instagram", "publication", 500, 3, 5},
+		{"1,000 likes Instagram", "High visibility", "curtidas_instagram", "instagram", "publication", 1000, 5, 10},
+		{"2,500 likes Instagram", "Picking up", "curtidas_instagram", "instagram", "publication", 2500, 11, 25},
+		{"5,000 likes Instagram", "Going viral", "curtidas_instagram", "instagram", "publication", 5000, 20, 50},
+		{"7,500 likes Instagram", "Trending fast", "curtidas_instagram", "instagram", "publication", 7500, 28, 75},
+		{"10,000 likes Instagram", "Trending", "curtidas_instagram", "instagram", "publication", 10000, 35, 100},
+		{"25,000 likes Instagram", "Hot post", "curtidas_instagram", "instagram", "publication", 25000, 80, 250},
+		{"50,000 likes Instagram", "Top of feed", "curtidas_instagram", "instagram", "publication", 50000, 150, 500},
+		{"100,000 likes Instagram", "Explosive", "curtidas_instagram", "instagram", "publication", 100000, 280, 1000},
 
-		// ===== TIKTOK ENGAGEMENT (publication) =====
-		// Likes
-		{"100 likes TikTok", "Initial boost", "engajamento_tiktok", "tiktok", "publication", 100, 2, 1},
-		{"250 likes TikTok", "Early traction", "engajamento_tiktok", "tiktok", "publication", 250, 4, 2},
-		{"500 likes TikTok", "Video boost", "engajamento_tiktok", "tiktok", "publication", 500, 6, 5},
-		{"1,000 likes TikTok", "Visibility", "engajamento_tiktok", "tiktok", "publication", 1000, 10, 10},
-		{"2,500 likes TikTok", "Picking up", "engajamento_tiktok", "tiktok", "publication", 2500, 22, 25},
-		{"5,000 likes TikTok", "Trending", "engajamento_tiktok", "tiktok", "publication", 5000, 40, 50},
-		{"7,500 likes TikTok", "Trending fast", "engajamento_tiktok", "tiktok", "publication", 7500, 56, 75},
-		{"10,000 likes TikTok", "For You page", "engajamento_tiktok", "tiktok", "publication", 10000, 70, 100},
-		{"25,000 likes TikTok", "Hot video", "engajamento_tiktok", "tiktok", "publication", 25000, 160, 250},
-		// Comments
-		{"25 comments TikTok", "Light conversation", "engajamento_tiktok", "tiktok", "publication", 25, 10, 1},
-		{"50 comments TikTok", "Conversation starter", "engajamento_tiktok", "tiktok", "publication", 50, 18, 2},
-		{"100 comments TikTok", "Real engagement", "engajamento_tiktok", "tiktok", "publication", 100, 30, 3},
-		{"250 comments TikTok", "Active discussion", "engajamento_tiktok", "tiktok", "publication", 250, 70, 5},
-		{"500 comments TikTok", "Community talk", "engajamento_tiktok", "tiktok", "publication", 500, 130, 10},
-		// Shares
-		{"100 shares TikTok", "Spread the word", "engajamento_tiktok", "tiktok", "publication", 100, 8, 1},
-		{"250 shares TikTok", "Early diffusion", "engajamento_tiktok", "tiktok", "publication", 250, 18, 3},
-		{"500 shares TikTok", "Extra reach", "engajamento_tiktok", "tiktok", "publication", 500, 32, 5},
-		{"1,000 shares TikTok", "Trending content", "engajamento_tiktok", "tiktok", "publication", 1000, 60, 10},
-		{"2,500 shares TikTok", "Wide reach", "engajamento_tiktok", "tiktok", "publication", 2500, 140, 25},
-		{"5,000 shares TikTok", "Real virality", "engajamento_tiktok", "tiktok", "publication", 5000, 260, 50},
+		// ===== INSTAGRAM COMMENTS (publication) =====
+		{"25 comments Instagram", "Light conversation", "comentarios_instagram", "instagram", "publication", 25, 5, 1},
+		{"50 comments Instagram", "Conversation starter", "comentarios_instagram", "instagram", "publication", 50, 9, 2},
+		{"100 comments Instagram", "Real engagement", "comentarios_instagram", "instagram", "publication", 100, 15, 3},
+		{"250 comments Instagram", "Active discussion", "comentarios_instagram", "instagram", "publication", 250, 35, 5},
+		{"500 comments Instagram", "Community talk", "comentarios_instagram", "instagram", "publication", 500, 65, 10},
+		{"1,000 comments Instagram", "Viral debate", "comentarios_instagram", "instagram", "publication", 1000, 120, 20},
+
+		// ===== INSTAGRAM SHARES + SAVES (publication) =====
+		// Shares e saves caem juntos em "compartilhamentos" — ambos são sinais
+		// de "espalhamento" e dividem a mesma página SEO.
+		{"100 shares Instagram", "Spread the word", "compartilhamentos_instagram", "instagram", "publication", 100, 4, 1},
+		{"250 shares Instagram", "Early diffusion", "compartilhamentos_instagram", "instagram", "publication", 250, 9, 3},
+		{"500 shares Instagram", "Extra reach", "compartilhamentos_instagram", "instagram", "publication", 500, 16, 5},
+		{"1,000 shares Instagram", "Trending content", "compartilhamentos_instagram", "instagram", "publication", 1000, 30, 10},
+		{"2,500 shares Instagram", "Wide reach", "compartilhamentos_instagram", "instagram", "publication", 2500, 70, 25},
+		{"5,000 shares Instagram", "Real virality", "compartilhamentos_instagram", "instagram", "publication", 5000, 130, 50},
+		{"100 saves Instagram", "Valuable content", "compartilhamentos_instagram", "instagram", "publication", 100, 3, 2},
+		{"250 saves Instagram", "Useful post", "compartilhamentos_instagram", "instagram", "publication", 250, 7, 4},
+		{"500 saves Instagram", "Reference material", "compartilhamentos_instagram", "instagram", "publication", 500, 13, 6},
+		{"1,000 saves Instagram", "Top of mind", "compartilhamentos_instagram", "instagram", "publication", 1000, 25, 11},
+		{"2,500 saves Instagram", "Bookmark-worthy", "compartilhamentos_instagram", "instagram", "publication", 2500, 55, 26},
+		{"5,000 saves Instagram", "Evergreen content", "compartilhamentos_instagram", "instagram", "publication", 5000, 100, 51},
+
+		// ===== TIKTOK LIKES (publication) =====
+		{"100 likes TikTok", "Initial boost", "curtidas_tiktok", "tiktok", "publication", 100, 2, 1},
+		{"250 likes TikTok", "Early traction", "curtidas_tiktok", "tiktok", "publication", 250, 4, 2},
+		{"500 likes TikTok", "Video boost", "curtidas_tiktok", "tiktok", "publication", 500, 6, 5},
+		{"1,000 likes TikTok", "Visibility", "curtidas_tiktok", "tiktok", "publication", 1000, 10, 10},
+		{"2,500 likes TikTok", "Picking up", "curtidas_tiktok", "tiktok", "publication", 2500, 22, 25},
+		{"5,000 likes TikTok", "Trending", "curtidas_tiktok", "tiktok", "publication", 5000, 40, 50},
+		{"7,500 likes TikTok", "Trending fast", "curtidas_tiktok", "tiktok", "publication", 7500, 56, 75},
+		{"10,000 likes TikTok", "For You page", "curtidas_tiktok", "tiktok", "publication", 10000, 70, 100},
+		{"25,000 likes TikTok", "Hot video", "curtidas_tiktok", "tiktok", "publication", 25000, 160, 250},
+
+		// ===== TIKTOK COMMENTS (publication) =====
+		{"25 comments TikTok", "Light conversation", "comentarios_tiktok", "tiktok", "publication", 25, 10, 1},
+		{"50 comments TikTok", "Conversation starter", "comentarios_tiktok", "tiktok", "publication", 50, 18, 2},
+		{"100 comments TikTok", "Real engagement", "comentarios_tiktok", "tiktok", "publication", 100, 30, 3},
+		{"250 comments TikTok", "Active discussion", "comentarios_tiktok", "tiktok", "publication", 250, 70, 5},
+		{"500 comments TikTok", "Community talk", "comentarios_tiktok", "tiktok", "publication", 500, 130, 10},
+
+		// ===== TIKTOK SHARES (publication) =====
+		{"100 shares TikTok", "Spread the word", "compartilhamentos_tiktok", "tiktok", "publication", 100, 8, 1},
+		{"250 shares TikTok", "Early diffusion", "compartilhamentos_tiktok", "tiktok", "publication", 250, 18, 3},
+		{"500 shares TikTok", "Extra reach", "compartilhamentos_tiktok", "tiktok", "publication", 500, 32, 5},
+		{"1,000 shares TikTok", "Trending content", "compartilhamentos_tiktok", "tiktok", "publication", 1000, 60, 10},
+		{"2,500 shares TikTok", "Wide reach", "compartilhamentos_tiktok", "tiktok", "publication", 2500, 140, 25},
+		{"5,000 shares TikTok", "Real virality", "compartilhamentos_tiktok", "tiktok", "publication", 5000, 260, 50},
 
 		// ===== INSTAGRAM VIEWS =====
 		// Reels (publication)
