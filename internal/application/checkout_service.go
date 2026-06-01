@@ -387,10 +387,10 @@ func (s *CheckoutService) sendCheckoutEmail(
 		AccountCreated:       accountCreated,
 		Password:             password,
 		PaymentURL:           paymentURL,
-		FallbackInstructions: "As instruções de pagamento seguem em breve. Em caso de dúvida, abra um ticket.",
+		FallbackInstructions: "Payment instructions will follow shortly. If you have any questions, open a support ticket.",
 	}
 	if paidWithCredits {
-		data.FallbackInstructions = "Pagamento com créditos confirmado. Seu pedido já está em produção."
+		data.FallbackInstructions = "Credits payment confirmed. Your order is already in production."
 	}
 	if paymentExtra != nil {
 		data.BrCode = paymentExtra["br_code"]

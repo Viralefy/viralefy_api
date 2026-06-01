@@ -35,8 +35,8 @@ func NewInvoiceService(
 
 type CreateInvoiceInput struct {
 	UserID          string
-	AmountCents     int64  // em BRL cents (valor que vai virar saldo)
-	DisplayCurrency string // moeda escolhida para exibição/cobrança
+	AmountCents     int64  // canônico em USD-cents (vira saldo USD no ledger)
+	DisplayCurrency string // moeda escolhida para exibição/cobrança (BRL, EUR, USDT…)
 }
 
 // Create gera invoice + tenta criar charge no gateway adequado.
@@ -44,7 +44,7 @@ func (s *InvoiceService) Create(ctx context.Context, in CreateInvoiceInput) (*do
 	if in.AmountCents <= 0 || in.UserID == "" {
 		return nil, domain.ErrInvalidInput
 	}
-	// Mínimo razoável: R$ 5,00 pra evitar lixo no PIX.
+	// Mínimo razoável: USD 5.00 pra evitar lixo nos gateways (PIX, Heleket etc.).
 	if in.AmountCents < 500 {
 		return nil, domain.ErrInvalidInput
 	}
@@ -84,7 +84,7 @@ func (s *InvoiceService) Create(ctx context.Context, in CreateInvoiceInput) (*do
 		if p, ok := s.payments.Get(gw.Provider); ok {
 			charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
 				OrderID:     inv.ID,
-				Description: "Recarga de créditos Viralefy",
+				Description: "Viralefy credits top-up",
 				Amount:      quote.SettlementAmount,
 				Currency:    quote.SettlementCurrency,
 				Customer:    PaymentCustomer{Name: u.Name, Email: u.Email},
@@ -162,7 +162,7 @@ func (s *InvoiceService) AdminMarkPaid(ctx context.Context, id string) (*domain.
 		return nil, err
 	}
 	// Credita saldo via ledger.
-	if _, err := s.credits.Recharge(ctx, inv.UserID, inv.AmountCents, &inv.ID, "Recarga via invoice "+inv.ID[:8]); err != nil {
+	if _, err := s.credits.Recharge(ctx, inv.UserID, inv.AmountCents, &inv.ID, "Top-up via invoice "+inv.ID[:8]); err != nil {
 		return nil, err
 	}
 	return s.invoices.GetByID(ctx, id)
