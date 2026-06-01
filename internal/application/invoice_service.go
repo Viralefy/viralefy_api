@@ -139,6 +139,11 @@ func (s *InvoiceService) Get(ctx context.Context, id, userID string) (*domain.In
 }
 
 // AdminList lista invoices p/ backoffice.
+// AdminGet expõe lookup direto pra handlers admin (sem checar ownership).
+func (s *InvoiceService) AdminGet(ctx context.Context, id string) (*domain.Invoice, error) {
+	return s.invoices.GetByID(ctx, id)
+}
+
 func (s *InvoiceService) AdminList(ctx context.Context, statusFilter string) ([]domain.Invoice, error) {
 	return s.invoices.ListAll(ctx, statusFilter)
 }

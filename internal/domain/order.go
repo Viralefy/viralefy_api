@@ -66,6 +66,11 @@ type OrderView struct {
 	Order
 	PlanName     string `json:"plan_name"`
 	PlanCategory string `json:"plan_category"`
+	// Hidratados a partir de users via JOIN. Listagem admin mostra
+	// nome do cliente em vez de UUID; histórico do usuário não usa
+	// (já está logado, sabe quem ele é).
+	UserName  string `json:"user_name,omitempty"`
+	UserEmail string `json:"user_email,omitempty"`
 }
 
 type OrderRepository interface {

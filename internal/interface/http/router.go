@@ -140,6 +140,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 
 			// Invoices (recargas). Marcar como paga é sensível → admins:manage.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/invoices", h.AdminListInvoices)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/invoices/{id}", h.AdminGetInvoice)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/invoices/{id}/mark-paid", h.AdminMarkInvoicePaid)
 
 			// Usuários, ajuste de saldo e marcação manual de pedido.

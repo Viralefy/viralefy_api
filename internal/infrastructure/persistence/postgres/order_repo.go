@@ -105,11 +105,16 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.baseline_metrics, o.baseline_captured_at, o.baseline_source,
 	o.delivery_metrics, o.delivery_captured_at, o.delivery_source,
 	o.created_at, o.updated_at,
-	COALESCE(p.name, ''), COALESCE(p.category, '')`
+	COALESCE(p.name, ''), COALESCE(p.category, ''),
+	COALESCE(u.name, ''), COALESCE(u.email, '')`
+
+const orderViewFrom = `FROM orders o
+		LEFT JOIN plans p ON p.id = o.plan_id
+		LEFT JOIN users u ON u.id = o.user_id`
 
 func (r *OrderRepo) ListViewByUser(ctx context.Context, userID string) ([]domain.OrderView, error) {
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderViewCols+`
-		FROM orders o LEFT JOIN plans p ON p.id = o.plan_id
+		`+orderViewFrom+`
 		WHERE o.user_id=$1 ORDER BY o.created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -120,7 +125,7 @@ func (r *OrderRepo) ListViewByUser(ctx context.Context, userID string) ([]domain
 
 func (r *OrderRepo) ListAllView(ctx context.Context) ([]domain.OrderView, error) {
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderViewCols+`
-		FROM orders o LEFT JOIN plans p ON p.id = o.plan_id
+		`+orderViewFrom+`
 		ORDER BY o.created_at DESC LIMIT 200`)
 	if err != nil {
 		return nil, err
@@ -234,7 +239,8 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 			&baseline, &v.BaselineCapturedAt, &v.BaselineSource,
 			&delivery, &v.DeliveryCapturedAt, &v.DeliverySource,
 			&v.CreatedAt, &v.UpdatedAt,
-			&v.PlanName, &v.PlanCategory)
+			&v.PlanName, &v.PlanCategory,
+			&v.UserName, &v.UserEmail)
 		if err != nil {
 			return nil, err
 		}

@@ -1080,6 +1080,26 @@ func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) 
 	writeData(w, http.StatusOK, inv)
 }
 
+// AdminGetInvoice devolve uma recarga específica com o user hidratado pra
+// UI mostrar nome em vez do UUID.
+func (h *Handlers) AdminGetInvoice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	inv, err := h.Invoices.AdminGet(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := map[string]any{"invoice": inv}
+	if u, err := h.Users.GetByID(r.Context(), inv.UserID); err == nil && u != nil {
+		out["user"] = map[string]any{
+			"id":    u.ID,
+			"name":  u.Name,
+			"email": u.Email,
+		}
+	}
+	writeData(w, http.StatusOK, out)
+}
+
 // --- Webhooks (público, verificados por assinatura) --- //
 
 func (h *Handlers) WooviWebhook(w http.ResponseWriter, r *http.Request) {
