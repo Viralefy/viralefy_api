@@ -124,6 +124,9 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			// PATCH muda status/notes; mark-paid já existe à parte como ação
 			// específica (chama PaymentReceiver pra disparar hooks).
 			r.With(RequirePermission(domain.PermAdminsManage)).Patch("/orders/{id}", h.AdminPatchOrder)
+			// Capture manual de baseline/delivery metrics. POST body opcional:
+			// {"kind":"baseline"|"delivery"} — default baseline.
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/capture-metrics", h.AdminCaptureOrderMetrics)
 			// Métricas agregadas pro /dashboard.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/metrics/summary", h.AdminMetricsSummary)
 

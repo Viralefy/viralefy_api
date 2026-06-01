@@ -18,6 +18,8 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	gateway_id, external_ref, payment_url, payment_extra,
 	profile_id, publication_url, payment_method, credits_used_cents,
 	custom_data, ticket_id, tracking,
+	baseline_metrics, baseline_captured_at, baseline_source,
+	delivery_metrics, delivery_captured_at, delivery_source,
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
@@ -100,6 +102,8 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.gateway_id, o.external_ref, o.payment_url, o.payment_extra,
 	o.profile_id, o.publication_url, o.payment_method, o.credits_used_cents,
 	o.custom_data, o.ticket_id, o.tracking,
+	o.baseline_metrics, o.baseline_captured_at, o.baseline_source,
+	o.delivery_metrics, o.delivery_captured_at, o.delivery_source,
 	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, '')`
 
@@ -183,12 +187,14 @@ func scanOrder(row pgx.Row) (*domain.Order, error) {
 
 func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 	var o domain.Order
-	var extra, custom, tracking []byte
+	var extra, custom, tracking, baseline, delivery []byte
 	err := row.Scan(&o.ID, &o.UserID, &o.PlanID, &o.Status, &o.AmountCents, &o.Currency,
 		&o.DisplayCurrency, &o.DisplayAmount, &o.SettlementCurrency, &o.SettlementAmount,
 		&o.GatewayID, &o.ExternalRef, &o.PaymentURL, &extra,
 		&o.ProfileID, &o.PublicationURL, &o.PaymentMethod, &o.CreditsUsedCents,
 		&custom, &o.TicketID, &tracking,
+		&baseline, &o.BaselineCapturedAt, &o.BaselineSource,
+		&delivery, &o.DeliveryCapturedAt, &o.DeliverySource,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
@@ -203,6 +209,14 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		if len(tracking) > 0 {
 			_ = json.Unmarshal(tracking, &o.Tracking)
 		}
+		if len(baseline) > 0 {
+			o.BaselineMetrics = map[string]any{}
+			_ = json.Unmarshal(baseline, &o.BaselineMetrics)
+		}
+		if len(delivery) > 0 {
+			o.DeliveryMetrics = map[string]any{}
+			_ = json.Unmarshal(delivery, &o.DeliveryMetrics)
+		}
 	}
 	return &o, err
 }
@@ -211,12 +225,14 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 	list := []domain.OrderView{}
 	for rows.Next() {
 		var v domain.OrderView
-		var extra, custom, tracking []byte
+		var extra, custom, tracking, baseline, delivery []byte
 		err := rows.Scan(&v.ID, &v.UserID, &v.PlanID, &v.Status, &v.AmountCents, &v.Currency,
 			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
 			&v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
 			&v.ProfileID, &v.PublicationURL, &v.PaymentMethod, &v.CreditsUsedCents,
 			&custom, &v.TicketID, &tracking,
+			&baseline, &v.BaselineCapturedAt, &v.BaselineSource,
+			&delivery, &v.DeliveryCapturedAt, &v.DeliverySource,
 			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory)
 		if err != nil {
@@ -234,7 +250,53 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 		if len(tracking) > 0 {
 			_ = json.Unmarshal(tracking, &v.Tracking)
 		}
+		if len(baseline) > 0 {
+			v.BaselineMetrics = map[string]any{}
+			_ = json.Unmarshal(baseline, &v.BaselineMetrics)
+		}
+		if len(delivery) > 0 {
+			v.DeliveryMetrics = map[string]any{}
+			_ = json.Unmarshal(delivery, &v.DeliveryMetrics)
+		}
 		list = append(list, v)
 	}
 	return list, rows.Err()
+}
+
+// SetBaselineMetrics grava o snapshot pré-entrega. Idempotente: re-runs
+// sobrescrevem (caso o operador chame manualmente após uma falha de scrape).
+func (r *OrderRepo) SetBaselineMetrics(ctx context.Context, orderID string, metrics map[string]any, source string) error {
+	raw, err := json.Marshal(metrics)
+	if err != nil {
+		return err
+	}
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders SET baseline_metrics=$2::jsonb, baseline_captured_at=NOW(),
+		                  baseline_source=$3, updated_at=NOW()
+		 WHERE id=$1`, orderID, raw, source)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *OrderRepo) SetDeliveryMetrics(ctx context.Context, orderID string, metrics map[string]any, source string) error {
+	raw, err := json.Marshal(metrics)
+	if err != nil {
+		return err
+	}
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders SET delivery_metrics=$2::jsonb, delivery_captured_at=NOW(),
+		                  delivery_source=$3, updated_at=NOW()
+		 WHERE id=$1`, orderID, raw, source)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }

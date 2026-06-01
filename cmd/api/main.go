@@ -129,6 +129,11 @@ func main() {
 		logger.Warn("turnstile disabled (TURNSTILE_SECRET_KEY empty) — anti-bot bypass")
 	}
 
+	metricCaptureSvc := application.NewMetricCaptureService(orderRepo, planRepo, profileRepo)
+	// Plumba pro CheckoutService disparar baseline async no momento da
+	// criação do pedido. Ver checkout_service.SetMetricCapture.
+	checkoutSvc.SetMetricCapture(metricCaptureSvc)
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,
@@ -147,6 +152,7 @@ func main() {
 		Turnstile:       turnstileSvc,
 		Audit:           auditSvc,
 		DB:              db,
+		Metrics:         metricCaptureSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

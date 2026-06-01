@@ -42,6 +42,16 @@ type Order struct {
 	// Usado pra anti-fraude (mesmo client_id + perfis comprando em loop)
 	// e CAPI/Events API (Meta/Google/TikTok) com event_source_url + click_id.
 	Tracking           map[string]any    `json:"tracking,omitempty"`
+	// Baseline + delivery metrics. Snapshots públicos do alvo antes do
+	// gateway começar (baseline) e depois (delivery). Discrepância entre
+	// (delivery - baseline) e order.followers_qty sinaliza falha de
+	// entrega independente do que o gateway respondeu.
+	BaselineMetrics    map[string]any    `json:"baseline_metrics,omitempty"`
+	BaselineCapturedAt *time.Time        `json:"baseline_captured_at,omitempty"`
+	BaselineSource     *string           `json:"baseline_source,omitempty"`
+	DeliveryMetrics    map[string]any    `json:"delivery_metrics,omitempty"`
+	DeliveryCapturedAt *time.Time        `json:"delivery_captured_at,omitempty"`
+	DeliverySource     *string           `json:"delivery_source,omitempty"`
 	// TicketID linka o pedido ao ticket aberto automaticamente quando
 	// `Status` virou `paid` em categorias que abrem ticket (recovery,
 	// BMs, perfis).
@@ -70,4 +80,10 @@ type OrderRepository interface {
 	UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error
 	// LinkTicket associa um ticket aberto pós-pagamento ao pedido.
 	LinkTicket(ctx context.Context, orderID, ticketID string) error
+	// SetBaselineMetrics grava snapshot do alvo PRÉ-entrega (followers/
+	// likes/views públicas via scrape). source identifica o método.
+	SetBaselineMetrics(ctx context.Context, orderID string, metrics map[string]any, source string) error
+	// SetDeliveryMetrics grava o snapshot pós-entrega usado pra verificar
+	// se o gateway efetivamente entregou.
+	SetDeliveryMetrics(ctx context.Context, orderID string, metrics map[string]any, source string) error
 }

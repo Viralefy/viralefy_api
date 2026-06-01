@@ -37,7 +37,8 @@ type Handlers struct {
 	// DB é exposto pra middleware de idempotency (lê/escreve em
 	// idempotency_keys). Quase nenhum handler precisa, mas o pattern de
 	// passar via Handlers mantém os middlewares chainable.
-	DB *postgres.DB
+	DB      *postgres.DB
+	Metrics *application.MetricCaptureService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -656,7 +657,8 @@ func (h *Handlers) AdminListOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminGetOrder devolve um pedido específico com TUDO: custom_data,
-// tracking, payment_extra. Usado pela tela de detalhe no backoffice.
+// tracking, payment_extra. Hidrata profile (handle, display_name, platform)
+// e user (name, email) pra UI mostrar nomes clicáveis em vez de UUIDs.
 func (h *Handlers) AdminGetOrder(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ord, err := h.Orders.GetByID(r.Context(), id)
@@ -664,7 +666,30 @@ func (h *Handlers) AdminGetOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeData(w, http.StatusOK, ord)
+	// Estrutura de saída: order com profile{} e user{} embutidos. Nulos
+	// se o lookup falhar (perfil deletado, user removido) — front exibe "—".
+	out := map[string]any{"order": ord}
+	if ord.ProfileID != nil && *ord.ProfileID != "" {
+		if p, err := h.Profiles.GetByID(r.Context(), *ord.ProfileID); err == nil && p != nil {
+			out["profile"] = map[string]any{
+				"id":           p.ID,
+				"handle":       p.Handle,
+				"display_name": p.DisplayName,
+				"platform":     p.Platform,
+				"verified":     p.Verified,
+			}
+		}
+	}
+	if ord.UserID != "" {
+		if u, err := h.Users.GetByID(r.Context(), ord.UserID); err == nil && u != nil {
+			out["user"] = map[string]any{
+				"id":    u.ID,
+				"name":  u.Name,
+				"email": u.Email,
+			}
+		}
+	}
+	writeData(w, http.StatusOK, out)
 }
 
 // AdminPatchOrder permite editar status e nota interna do pedido.
@@ -705,6 +730,40 @@ func (h *Handlers) AdminPatchOrder(w http.ResponseWriter, r *http.Request) {
 	after, _ := h.Orders.GetByID(r.Context(), id)
 	h.logAudit(r, "update", "order", id, before, after)
 	writeData(w, http.StatusOK, after)
+}
+
+// AdminCaptureOrderMetrics dispara captura manual de baseline ou delivery
+// pra um pedido. Síncrono (10–20s de scrape no máx) — admin clica e
+// espera. Body opcional: {"kind":"baseline"|"delivery"} — default baseline.
+func (h *Handlers) AdminCaptureOrderMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.Metrics == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	kind := "baseline"
+	if body, err := io.ReadAll(r.Body); err == nil && len(body) > 0 {
+		var b struct {
+			Kind string `json:"kind"`
+		}
+		_ = json.Unmarshal(body, &b)
+		if b.Kind == "delivery" {
+			kind = "delivery"
+		}
+	}
+	var err error
+	if kind == "delivery" {
+		err = h.Metrics.CaptureDelivery(r.Context(), id)
+	} else {
+		err = h.Metrics.CaptureBaseline(r.Context(), id)
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// Devolve o order atualizado pra UI re-renderizar imediatamente.
+	ord, _ := h.Orders.GetByID(r.Context(), id)
+	writeData(w, http.StatusOK, ord)
 }
 
 // AdminMetricsSummary alimenta o /dashboard com agregados:

@@ -26,6 +26,13 @@ func (s *ProfileService) List(ctx context.Context, userID string) ([]domain.Prof
 	return s.repo.ListByUser(ctx, userID)
 }
 
+// GetByID expõe o repo pra handlers admin que hidratam relacionamentos
+// (ex.: detalhe de pedido). User-facing devem usar GetForUser pra checar
+// ownership.
+func (s *ProfileService) GetByID(ctx context.Context, id string) (*domain.Profile, error) {
+	return s.repo.GetByID(ctx, id)
+}
+
 // Add valida o handle e cria o perfil. Marca verified=true se passou no validador.
 func (s *ProfileService) Add(ctx context.Context, in AddProfileInput) (*domain.Profile, error) {
 	platform := domain.Platform(in.Platform)

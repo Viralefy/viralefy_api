@@ -21,6 +21,32 @@ type CheckoutService struct {
 	email      EmailSender
 	payments   *PaymentRegistry
 	siteURL    string
+	// metrics é opcional. Quando setado via SetMetricCapture, cada Order.
+	// Create dispara um snapshot best-effort em goroutine separada —
+	// usado como segunda fonte de verdade ao verificar entrega do gateway.
+	metrics *MetricCaptureService
+}
+
+// SetMetricCapture liga o capture pós-criação. Chamado uma vez no
+// bootstrap (main.go). Mantemos opcional pra testes não exigirem o
+// scraper.
+func (s *CheckoutService) SetMetricCapture(svc *MetricCaptureService) {
+	s.metrics = svc
+}
+
+// fireBaselineCapture roda em goroutine separada (não bloqueia o
+// checkout). Erros ficam no log; baseline_source vira "manual_pending"
+// quando o scrape falha pro operador resolver.
+func (s *CheckoutService) fireBaselineCapture(orderID string) {
+	if s.metrics == nil {
+		return
+	}
+	go func() {
+		// context background — o request já voltou; queremos sobreviver
+		// ao cancel do request. Timeout interno no MetricCaptureService.
+		bg := context.Background()
+		_ = s.metrics.CaptureBaseline(bg, orderID)
+	}()
 }
 
 func NewCheckoutService(
@@ -217,6 +243,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		if err := s.orders.Create(ctx, order); err != nil {
 			return nil, err
 		}
+		s.fireBaselineCapture(orderID)
 		// Debita do ledger (atômico no repo).
 		newAcct, err := s.credits.Spend(ctx, userID, int64(plan.PriceCents), "Pedido "+plan.Name, &orderID)
 		if err != nil {
@@ -242,6 +269,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, err
 	}
+	s.fireBaselineCapture(orderID)
 
 	provider := ""
 	var paymentURL string
