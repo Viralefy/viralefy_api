@@ -55,6 +55,10 @@ type CheckoutInput struct {
 	// (Account Recovery, BMs, perfis). Schema livre; é guardado na order
 	// e replayed no ticket aberto após pagamento.
 	CustomData     map[string]any
+	// Tracking (UTM/fbclid/gclid/referrer/landing_url/ip/user_agent).
+	// Guardado na order e replicado em users.tracking_data se o user é
+	// recém-criado nesse checkout (first-touch attribution).
+	Tracking       map[string]any
 	// Pagamento:
 	PaymentMethod string // "gateway" (default) ou "credits". credits exige usuário logado com saldo
 	UserID        string // setado pelo handler quando usuário está logado; obrigatório p/ credits
@@ -141,6 +145,9 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		if err := s.users.Create(ctx, domain.User{
 			ID: userID, Email: in.Email, Name: in.Name, Instagram: "",
 			PasswordHash: string(hash),
+			// First-touch attribution: o checkout anônimo cria o user e já
+			// guarda o tracking — fica disponível pra CAPI/Events API.
+			TrackingData: in.Tracking,
 		}); err != nil {
 			return nil, err
 		}
@@ -185,6 +192,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		SettlementAmount:   quote.SettlementAmount,
 		PaymentMethod:      in.PaymentMethod,
 		CustomData:         in.CustomData,
+		Tracking:           in.Tracking,
 	}
 	if profileID != "" {
 		order.ProfileID = &profileID

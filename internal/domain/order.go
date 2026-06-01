@@ -38,6 +38,10 @@ type Order struct {
 	// publicação). Schema livre por categoria; backend não interpreta, só
 	// repassa pro ticket aberto após pagamento.
 	CustomData         map[string]any    `json:"custom_data,omitempty"`
+	// Tracking carrega UTM/fbclid/gclid/referrer/landing_url/ip/user_agent.
+	// Usado pra anti-fraude (mesmo client_id + perfis comprando em loop)
+	// e CAPI/Events API (Meta/Google/TikTok) com event_source_url + click_id.
+	Tracking           map[string]any    `json:"tracking,omitempty"`
 	// TicketID linka o pedido ao ticket aberto automaticamente quando
 	// `Status` virou `paid` em categorias que abrem ticket (recovery,
 	// BMs, perfis).

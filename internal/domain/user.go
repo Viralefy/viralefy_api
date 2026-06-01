@@ -12,6 +12,10 @@ type User struct {
 	Instagram    string    `json:"instagram"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
+	// TrackingData é o first-touch attribution (utm/fbclid/gclid/referrer/
+	// landing_url + ip/user_agent server-side). Guardado uma vez no
+	// register/checkout-anônimo; não atualizado depois.
+	TrackingData map[string]any `json:"tracking_data,omitempty"`
 }
 
 // UserView é o user enriquecido com saldo (para listagens no admin).

@@ -120,6 +120,12 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermGatewaysWrite)).Delete("/gateways/{id}", h.AdminDeleteGateway)
 
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders", h.AdminListOrders)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders/{id}", h.AdminGetOrder)
+			// PATCH muda status/notes; mark-paid já existe à parte como ação
+			// específica (chama PaymentReceiver pra disparar hooks).
+			r.With(RequirePermission(domain.PermAdminsManage)).Patch("/orders/{id}", h.AdminPatchOrder)
+			// Métricas agregadas pro /dashboard.
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/metrics/summary", h.AdminMetricsSummary)
 
 			r.With(RequirePermission(domain.PermCurrenciesRead)).Get("/currencies", h.AdminListCurrencies)
 			r.With(RequirePermission(domain.PermCurrenciesWrite)).Put("/currencies/{code}", h.AdminUpdateCurrency)

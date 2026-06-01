@@ -17,7 +17,7 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	display_currency, display_amount, settlement_currency, settlement_amount,
 	gateway_id, external_ref, payment_url, payment_extra,
 	profile_id, publication_url, payment_method, credits_used_cents,
-	custom_data, ticket_id,
+	custom_data, ticket_id, tracking,
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
@@ -29,6 +29,10 @@ func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 	if len(custom) == 0 {
 		custom = []byte("{}")
 	}
+	tracking, _ := json.Marshal(o.Tracking)
+	if len(tracking) == 0 {
+		tracking = []byte("{}")
+	}
 	if o.PaymentMethod == "" {
 		o.PaymentMethod = "gateway"
 	}
@@ -37,13 +41,13 @@ func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 			display_currency, display_amount, settlement_currency, settlement_amount,
 			gateway_id, payment_extra,
 			profile_id, publication_url, payment_method, credits_used_cents,
-			custom_data, ticket_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+			custom_data, ticket_id, tracking)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		o.ID, o.UserID, o.PlanID, o.Status, o.AmountCents, o.Currency,
 		o.DisplayCurrency, o.DisplayAmount, o.SettlementCurrency, o.SettlementAmount,
 		o.GatewayID, extra,
 		o.ProfileID, o.PublicationURL, o.PaymentMethod, o.CreditsUsedCents,
-		custom, o.TicketID)
+		custom, o.TicketID, tracking)
 	return err
 }
 
@@ -95,7 +99,7 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.display_currency, o.display_amount, o.settlement_currency, o.settlement_amount,
 	o.gateway_id, o.external_ref, o.payment_url, o.payment_extra,
 	o.profile_id, o.publication_url, o.payment_method, o.credits_used_cents,
-	o.custom_data, o.ticket_id,
+	o.custom_data, o.ticket_id, o.tracking,
 	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, '')`
 
@@ -179,12 +183,12 @@ func scanOrder(row pgx.Row) (*domain.Order, error) {
 
 func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 	var o domain.Order
-	var extra, custom []byte
+	var extra, custom, tracking []byte
 	err := row.Scan(&o.ID, &o.UserID, &o.PlanID, &o.Status, &o.AmountCents, &o.Currency,
 		&o.DisplayCurrency, &o.DisplayAmount, &o.SettlementCurrency, &o.SettlementAmount,
 		&o.GatewayID, &o.ExternalRef, &o.PaymentURL, &extra,
 		&o.ProfileID, &o.PublicationURL, &o.PaymentMethod, &o.CreditsUsedCents,
-		&custom, &o.TicketID,
+		&custom, &o.TicketID, &tracking,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
@@ -195,6 +199,10 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		if len(custom) > 0 {
 			_ = json.Unmarshal(custom, &o.CustomData)
 		}
+		o.Tracking = map[string]any{}
+		if len(tracking) > 0 {
+			_ = json.Unmarshal(tracking, &o.Tracking)
+		}
 	}
 	return &o, err
 }
@@ -203,12 +211,12 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 	list := []domain.OrderView{}
 	for rows.Next() {
 		var v domain.OrderView
-		var extra, custom []byte
+		var extra, custom, tracking []byte
 		err := rows.Scan(&v.ID, &v.UserID, &v.PlanID, &v.Status, &v.AmountCents, &v.Currency,
 			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
 			&v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
 			&v.ProfileID, &v.PublicationURL, &v.PaymentMethod, &v.CreditsUsedCents,
-			&custom, &v.TicketID,
+			&custom, &v.TicketID, &tracking,
 			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory)
 		if err != nil {
@@ -221,6 +229,10 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 		v.CustomData = map[string]any{}
 		if len(custom) > 0 {
 			_ = json.Unmarshal(custom, &v.CustomData)
+		}
+		v.Tracking = map[string]any{}
+		if len(tracking) > 0 {
+			_ = json.Unmarshal(tracking, &v.Tracking)
 		}
 		list = append(list, v)
 	}

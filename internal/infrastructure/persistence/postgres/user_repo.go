@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
@@ -13,30 +14,41 @@ type UserRepo struct{ db *DB }
 func NewUserRepo(db *DB) *UserRepo { return &UserRepo{db: db} }
 
 func (r *UserRepo) Create(ctx context.Context, u domain.User) error {
+	tracking, _ := json.Marshal(u.TrackingData)
+	if len(tracking) == 0 {
+		tracking = []byte("{}")
+	}
 	_, err := r.db.pool.Exec(ctx, `
-		INSERT INTO users (id, email, name, instagram, password_hash)
-		VALUES ($1,$2,$3,$4,$5)`, u.ID, u.Email, u.Name, u.Instagram, u.PasswordHash)
+		INSERT INTO users (id, email, name, instagram, password_hash, tracking_data)
+		VALUES ($1,$2,$3,$4,$5,$6)`,
+		u.ID, u.Email, u.Name, u.Instagram, u.PasswordHash, tracking)
 	return err
 }
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	row := r.db.pool.QueryRow(ctx, `
-		SELECT id, email, name, instagram, password_hash, created_at FROM users WHERE email=$1`, email)
-	var u domain.User
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Instagram, &u.PasswordHash, &u.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrNotFound
-	}
-	return &u, err
+		SELECT id, email, name, instagram, password_hash, created_at, tracking_data
+		  FROM users WHERE email=$1`, email)
+	return scanUser(row)
 }
 
 func (r *UserRepo) GetByID(ctx context.Context, id string) (*domain.User, error) {
 	row := r.db.pool.QueryRow(ctx, `
-		SELECT id, email, name, instagram, password_hash, created_at FROM users WHERE id=$1`, id)
+		SELECT id, email, name, instagram, password_hash, created_at, tracking_data
+		  FROM users WHERE id=$1`, id)
+	return scanUser(row)
+}
+
+func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
-	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Instagram, &u.PasswordHash, &u.CreatedAt)
+	var tracking []byte
+	err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Instagram, &u.PasswordHash, &u.CreatedAt, &tracking)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
+	}
+	if err == nil && len(tracking) > 0 {
+		u.TrackingData = map[string]any{}
+		_ = json.Unmarshal(tracking, &u.TrackingData)
 	}
 	return &u, err
 }

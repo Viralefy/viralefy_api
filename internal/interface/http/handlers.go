@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
@@ -102,11 +104,12 @@ func (h *Handlers) CreateRecoveryRequest(w http.ResponseWriter, r *http.Request)
 		EstimatedReason     string `json:"estimated_reason"`       // suspeita do usuário
 		LastPublicationURL  string `json:"last_publication_url"`   // último post visível
 		Description         string `json:"description"`            // contexto extra
-		ContactEmail        string `json:"contact_email"`
-		ContactName         string `json:"contact_name"`
-		DisplayCurrency     string `json:"display_currency"`
-		PaymentMethod       string `json:"payment_method,omitempty"`
-		TurnstileToken      string `json:"turnstile_token"`
+		ContactEmail        string         `json:"contact_email"`
+		ContactName         string         `json:"contact_name"`
+		DisplayCurrency     string         `json:"display_currency"`
+		PaymentMethod       string         `json:"payment_method,omitempty"`
+		TurnstileToken      string         `json:"turnstile_token"`
+		Tracking            map[string]any `json:"tracking,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -155,6 +158,7 @@ func (h *Handlers) CreateRecoveryRequest(w http.ResponseWriter, r *http.Request)
 		PublicationURL:  body.LastPublicationURL,
 		PaymentMethod:   body.PaymentMethod,
 		CustomData:      custom,
+		Tracking:        h.enrichTracking(r, body.Tracking),
 	}
 	if uid := userIDFromContext(r.Context()); uid != "" {
 		in.UserID = uid
@@ -177,6 +181,8 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		NewProfile      *application.NewProfileInline `json:"new_profile,omitempty"`
 		PublicationURL  string                        `json:"publication_url,omitempty"`
 		PaymentMethod   string                        `json:"payment_method,omitempty"` // gateway | credits
+		CustomData      map[string]any                `json:"custom_data,omitempty"`
+		Tracking        map[string]any                `json:"tracking,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -191,6 +197,8 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		NewProfile:      body.NewProfile,
 		PublicationURL:  body.PublicationURL,
 		PaymentMethod:   body.PaymentMethod,
+		CustomData:      body.CustomData,
+		Tracking:        h.enrichTracking(r, body.Tracking),
 	}
 	// Se houver token de usuário, força o userID do token (rota /v1/checkout é
 	// pública mas honra a autenticação opcional para credit/profile linkage).
@@ -209,16 +217,23 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) UserRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email    string `json:"email"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
+		Email          string         `json:"email"`
+		Name           string         `json:"name"`
+		Password       string         `json:"password"`
+		TurnstileToken string         `json:"turnstile_token"`
+		Tracking       map[string]any `json:"tracking,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+	if !h.verifyTurnstile(r, body.TurnstileToken) {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
 	res, err := h.UserAuth.Register(r.Context(), application.RegisterInput{
 		Email: body.Email, Name: body.Name, Password: body.Password,
+		Tracking: h.enrichTracking(r, body.Tracking),
 	})
 	if err != nil {
 		writeError(w, err)
@@ -229,10 +244,15 @@ func (h *Handlers) UserRegister(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) UserLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email          string `json:"email"`
+		Password       string `json:"password"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if !h.verifyTurnstile(r, body.TurnstileToken) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
@@ -242,6 +262,46 @@ func (h *Handlers) UserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, res)
+}
+
+// enrichTracking pega o snapshot client-side (utm/fbclid/gclid/referrer/
+// landing_url/client_id/etc.) e adiciona campos server-side que o cliente
+// não consegue forjar: IP real, user-agent visto pela API, e timestamp
+// de submit. Cliente vazio também é OK — voltamos só com server-side.
+//
+// Tudo num único map[string]any pra ir direto pra orders.tracking jsonb.
+func (h *Handlers) enrichTracking(r *http.Request, client map[string]any) map[string]any {
+	out := make(map[string]any, len(client)+4)
+	for k, v := range client {
+		out[k] = v
+	}
+	out["server_ip"] = clientIP(r)
+	if ua := r.Header.Get("User-Agent"); ua != "" {
+		out["server_user_agent"] = ua
+	}
+	if al := r.Header.Get("Accept-Language"); al != "" {
+		out["server_accept_language"] = al
+	}
+	out["server_submitted_at"] = time.Now().UTC().Format(time.RFC3339)
+	return out
+}
+
+// verifyTurnstile valida o token contra o Cloudflare Turnstile. Quando o
+// serviço está desabilitado (TURNSTILE_SECRET_KEY vazio em HML), aceita
+// qualquer token (no-op). Retorna true se passou.
+func (h *Handlers) verifyTurnstile(r *http.Request, token string) bool {
+	if h.Turnstile == nil || !h.Turnstile.Enabled() {
+		return true
+	}
+	if err := h.Turnstile.Verify(r.Context(), token, clientIP(r)); err != nil {
+		observability.FromContext(r.Context()).Warn("turnstile failed on auth",
+			"path", r.URL.Path,
+			"ip", clientIP(r),
+			"error", err.Error(),
+		)
+		return false
+	}
+	return true
 }
 
 // --- Tickets do usuário (loja) --- //
@@ -435,10 +495,15 @@ func (h *Handlers) AdminListRoles(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email          string `json:"email"`
+		Password       string `json:"password"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if !h.verifyTurnstile(r, body.TurnstileToken) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
@@ -588,6 +653,183 @@ func (h *Handlers) AdminListOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, orders)
+}
+
+// AdminGetOrder devolve um pedido específico com TUDO: custom_data,
+// tracking, payment_extra. Usado pela tela de detalhe no backoffice.
+func (h *Handlers) AdminGetOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ord, err := h.Orders.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, ord)
+}
+
+// AdminPatchOrder permite editar status e nota interna do pedido.
+// Status: pending|paid|failed|cancelled. Mudança pra `paid` deveria usar
+// /orders/{id}/mark-paid (que dispara os hooks pós-pagamento); aqui
+// permitimos pra correção emergencial (não dispara email/webhook).
+func (h *Handlers) AdminPatchOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Status *string `json:"status,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	before, _ := h.Orders.GetByID(r.Context(), id)
+	if before == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	if body.Status != nil {
+		valid := map[string]domain.OrderStatus{
+			"pending":   domain.OrderStatusPending,
+			"paid":      domain.OrderStatusPaid,
+			"failed":    domain.OrderStatusFailed,
+			"cancelled": domain.OrderStatusCancelled,
+		}
+		s, ok := valid[*body.Status]
+		if !ok {
+			writeError(w, domain.ErrInvalidInput)
+			return
+		}
+		if err := h.Orders.UpdateStatus(r.Context(), id, s, before.ExternalRef); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	after, _ := h.Orders.GetByID(r.Context(), id)
+	h.logAudit(r, "update", "order", id, before, after)
+	writeData(w, http.StatusOK, after)
+}
+
+// AdminMetricsSummary alimenta o /dashboard com agregados:
+//   - totals por status (pending/paid/failed)
+//   - revenue total em USD (settlement_amount somado quando paid)
+//   - top 5 categorias por revenue
+//   - top 5 países por revenue (extraído de plan_category, ou da
+//     tracking — fora de escopo nesse primeiro corte)
+//   - serie temporal de 30d (orders/dia)
+//
+// Tudo computado em memória — escala bem até ~50k orders. Em PRD pode
+// virar materialized view.
+func (h *Handlers) AdminMetricsSummary(w http.ResponseWriter, r *http.Request) {
+	orders, err := h.Orders.ListAllView(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	type byCat struct {
+		Category string `json:"category"`
+		Orders   int    `json:"orders"`
+		Revenue  string `json:"revenue_usd"`
+	}
+	type daily struct {
+		Day     string `json:"day"`
+		Orders  int    `json:"orders"`
+		Revenue string `json:"revenue_usd"`
+	}
+	statusCount := map[string]int{}
+	catAgg := map[string]struct {
+		count   int
+		revenue float64
+	}{}
+	dailyAgg := map[string]struct {
+		count   int
+		revenue float64
+	}{}
+	var totalRevenue float64
+	var totalPaid int
+	for _, o := range orders {
+		statusCount[string(o.Status)]++
+		amt := float64(o.AmountCents) / 100.0
+		day := o.CreatedAt.UTC().Format("2006-01-02")
+		dEntry := dailyAgg[day]
+		dEntry.count++
+		if o.Status == domain.OrderStatusPaid {
+			dEntry.revenue += amt
+			totalRevenue += amt
+			totalPaid++
+			cEntry := catAgg[o.PlanCategory]
+			cEntry.count++
+			cEntry.revenue += amt
+			catAgg[o.PlanCategory] = cEntry
+		}
+		dailyAgg[day] = dEntry
+	}
+
+	// top 5 categorias por revenue desc
+	cats := make([]byCat, 0, len(catAgg))
+	for k, v := range catAgg {
+		cats = append(cats, byCat{
+			Category: k, Orders: v.count,
+			Revenue: strings.TrimRight(strings.TrimRight(formatFloat(v.revenue, 2), "0"), "."),
+		})
+	}
+	// sort manual sem importar "sort" — pequeno e claro
+	for i := 1; i < len(cats); i++ {
+		j := i
+		for j > 0 && parseFloatOr(cats[j].Revenue, 0) > parseFloatOr(cats[j-1].Revenue, 0) {
+			cats[j], cats[j-1] = cats[j-1], cats[j]
+			j--
+		}
+	}
+	if len(cats) > 5 {
+		cats = cats[:5]
+	}
+
+	// série diária ordenada (últimos 30 dias)
+	days := make([]string, 0, len(dailyAgg))
+	for k := range dailyAgg {
+		days = append(days, k)
+	}
+	// sort lexicográfico funciona pra YYYY-MM-DD
+	for i := 1; i < len(days); i++ {
+		j := i
+		for j > 0 && days[j] < days[j-1] {
+			days[j], days[j-1] = days[j-1], days[j]
+			j--
+		}
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02")
+	series := make([]daily, 0, 30)
+	for _, d := range days {
+		if d < cutoff {
+			continue
+		}
+		entry := dailyAgg[d]
+		series = append(series, daily{
+			Day: d, Orders: entry.count,
+			Revenue: formatFloat(entry.revenue, 2),
+		})
+	}
+
+	writeData(w, http.StatusOK, map[string]any{
+		"orders_total":  len(orders),
+		"orders_paid":   totalPaid,
+		"revenue_usd":   formatFloat(totalRevenue, 2),
+		"status_count":  statusCount,
+		"top_categories": cats,
+		"daily_30d":     series,
+	})
+}
+
+func formatFloat(f float64, dec int) string {
+	if dec == 2 {
+		return strconv.FormatFloat(f, 'f', 2, 64)
+	}
+	return strconv.FormatFloat(f, 'f', dec, 64)
+}
+
+func parseFloatOr(s string, def float64) float64 {
+	if v, err := strconv.ParseFloat(s, 64); err == nil {
+		return v
+	}
+	return def
 }
 
 func (h *Handlers) AdminListCurrencies(w http.ResponseWriter, r *http.Request) {

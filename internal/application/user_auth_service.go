@@ -25,6 +25,9 @@ type RegisterInput struct {
 	Email    string
 	Name     string
 	Password string
+	// Tracking first-touch (utm/fbclid/referrer/landing_url enriquecido com
+	// IP+UA server-side). Persistido em users.tracking_data.
+	Tracking map[string]any
 }
 
 type UserSession struct {
@@ -58,6 +61,7 @@ func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*User
 		Name:         in.Name,
 		Instagram:    "", // legado — perfis ficam em /v1/me/profiles agora
 		PasswordHash: string(hash),
+		TrackingData: in.Tracking,
 	}
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
