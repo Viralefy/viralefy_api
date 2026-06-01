@@ -56,6 +56,12 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(optionalUserAuth).Post("/checkout", h.CreateCheckout)
 
+		// Account Recovery: aceita formulário (data do banimento, motivo,
+		// última publicação) e dispara checkout do plano de recuperação;
+		// após payment, abre ticket automático com snapshot do form.
+		// Protegido por Turnstile.
+		r.With(optionalUserAuth).Post("/recovery-request", h.CreateRecoveryRequest)
+
 		// Webhooks dos providers (sem auth — assinatura é validada no handler).
 		r.Post("/webhooks/woovi", h.WooviWebhook)
 		r.Post("/webhooks/heleket", h.HeleketWebhook)

@@ -17,12 +17,17 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	display_currency, display_amount, settlement_currency, settlement_amount,
 	gateway_id, external_ref, payment_url, payment_extra,
 	profile_id, publication_url, payment_method, credits_used_cents,
+	custom_data, ticket_id,
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 	extra, _ := json.Marshal(o.PaymentExtra)
 	if len(extra) == 0 {
 		extra = []byte("{}")
+	}
+	custom, _ := json.Marshal(o.CustomData)
+	if len(custom) == 0 {
+		custom = []byte("{}")
 	}
 	if o.PaymentMethod == "" {
 		o.PaymentMethod = "gateway"
@@ -31,13 +36,29 @@ func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 		INSERT INTO orders (id, user_id, plan_id, status, amount_cents, currency,
 			display_currency, display_amount, settlement_currency, settlement_amount,
 			gateway_id, payment_extra,
-			profile_id, publication_url, payment_method, credits_used_cents)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+			profile_id, publication_url, payment_method, credits_used_cents,
+			custom_data, ticket_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		o.ID, o.UserID, o.PlanID, o.Status, o.AmountCents, o.Currency,
 		o.DisplayCurrency, o.DisplayAmount, o.SettlementCurrency, o.SettlementAmount,
 		o.GatewayID, extra,
-		o.ProfileID, o.PublicationURL, o.PaymentMethod, o.CreditsUsedCents)
+		o.ProfileID, o.PublicationURL, o.PaymentMethod, o.CreditsUsedCents,
+		custom, o.TicketID)
 	return err
+}
+
+// LinkTicket marca o ticket que foi aberto pro pedido (após pagamento
+// confirmado em categorias com handoff manual).
+func (r *OrderRepo) LinkTicket(ctx context.Context, orderID, ticketID string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders SET ticket_id=$2, updated_at=NOW() WHERE id=$1`, orderID, ticketID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *OrderRepo) GetByID(ctx context.Context, id string) (*domain.Order, error) {
@@ -74,6 +95,7 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.display_currency, o.display_amount, o.settlement_currency, o.settlement_amount,
 	o.gateway_id, o.external_ref, o.payment_url, o.payment_extra,
 	o.profile_id, o.publication_url, o.payment_method, o.credits_used_cents,
+	o.custom_data, o.ticket_id,
 	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, '')`
 
@@ -157,16 +179,21 @@ func scanOrder(row pgx.Row) (*domain.Order, error) {
 
 func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 	var o domain.Order
-	var extra []byte
+	var extra, custom []byte
 	err := row.Scan(&o.ID, &o.UserID, &o.PlanID, &o.Status, &o.AmountCents, &o.Currency,
 		&o.DisplayCurrency, &o.DisplayAmount, &o.SettlementCurrency, &o.SettlementAmount,
 		&o.GatewayID, &o.ExternalRef, &o.PaymentURL, &extra,
 		&o.ProfileID, &o.PublicationURL, &o.PaymentMethod, &o.CreditsUsedCents,
+		&custom, &o.TicketID,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
 		if len(extra) > 0 {
 			_ = json.Unmarshal(extra, &o.PaymentExtra)
+		}
+		o.CustomData = map[string]any{}
+		if len(custom) > 0 {
+			_ = json.Unmarshal(custom, &o.CustomData)
 		}
 	}
 	return &o, err
@@ -176,11 +203,12 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 	list := []domain.OrderView{}
 	for rows.Next() {
 		var v domain.OrderView
-		var extra []byte
+		var extra, custom []byte
 		err := rows.Scan(&v.ID, &v.UserID, &v.PlanID, &v.Status, &v.AmountCents, &v.Currency,
 			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
 			&v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
 			&v.ProfileID, &v.PublicationURL, &v.PaymentMethod, &v.CreditsUsedCents,
+			&custom, &v.TicketID,
 			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory)
 		if err != nil {
@@ -189,6 +217,10 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 		v.PaymentExtra = map[string]string{}
 		if len(extra) > 0 {
 			_ = json.Unmarshal(extra, &v.PaymentExtra)
+		}
+		v.CustomData = map[string]any{}
+		if len(custom) > 0 {
+			_ = json.Unmarshal(custom, &v.CustomData)
 		}
 		list = append(list, v)
 	}

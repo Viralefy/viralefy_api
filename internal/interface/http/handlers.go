@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/domain"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 )
 
@@ -27,6 +29,28 @@ type Handlers struct {
 	Credits         *application.CreditService
 	Invoices        *application.InvoiceService
 	PaymentReceiver *application.PaymentReceiver
+	Turnstile       *turnstile.Service
+}
+
+// clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
+// quando vier do Caddy/Cloudflare. Usado pelo Turnstile pra reforçar
+// detecção de bot via origem.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Pega o primeiro IP (o cliente original) — o resto são proxies.
+		if idx := strings.IndexByte(xff, ','); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if ra := r.RemoteAddr; ra != "" {
+		// "host:port" → "host"
+		if idx := strings.LastIndexByte(ra, ':'); idx > 0 {
+			return ra[:idx]
+		}
+		return ra
+	}
+	return ""
 }
 
 // --- Público ---
@@ -56,6 +80,85 @@ func (h *Handlers) ListCurrencies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, curs)
+}
+
+// CreateRecoveryRequest é o entrypoint para o formulário de Account Recovery
+// nas LPs por país. Valida Turnstile, encontra o plano de recuperação, e
+// dispara o Checkout com o snapshot completo do form em CustomData.
+//
+// O ticket é aberto automaticamente após a confirmação do pagamento (hook
+// no PaymentReceiver). Pré-pagamento, fica só a order pending.
+func (h *Handlers) CreateRecoveryRequest(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Handle              string `json:"handle"`                 // @handle alvo
+		Platform            string `json:"platform"`               // instagram | tiktok
+		BanDate             string `json:"ban_date"`               // ISO 8601 ou texto livre
+		EstimatedReason     string `json:"estimated_reason"`       // suspeita do usuário
+		LastPublicationURL  string `json:"last_publication_url"`   // último post visível
+		Description         string `json:"description"`            // contexto extra
+		ContactEmail        string `json:"contact_email"`
+		ContactName         string `json:"contact_name"`
+		DisplayCurrency     string `json:"display_currency"`
+		PaymentMethod       string `json:"payment_method,omitempty"`
+		TurnstileToken      string `json:"turnstile_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if body.Handle == "" || body.ContactEmail == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if h.Turnstile != nil {
+		if err := h.Turnstile.Verify(r.Context(), body.TurnstileToken, clientIP(r)); err != nil {
+			observability.FromContext(r.Context()).Warn("recovery: turnstile failed",
+				"ip", clientIP(r),
+				"error", err.Error(),
+			)
+			writeError(w, domain.ErrInvalidInput)
+			return
+		}
+	}
+
+	// Encontra o plano de recuperação na categoria dedicada.
+	plans, err := h.Plans.ListByCategory(r.Context(), "recuperacao_perfil")
+	if err != nil || len(plans) == 0 {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	plan := plans[0]
+
+	custom := map[string]any{
+		"handle":               body.Handle,
+		"platform":             body.Platform,
+		"ban_date":             body.BanDate,
+		"estimated_reason":     body.EstimatedReason,
+		"last_publication_url": body.LastPublicationURL,
+		"description":          body.Description,
+		"contact_email":        body.ContactEmail,
+		"contact_name":         body.ContactName,
+		"form_type":            "account_recovery",
+	}
+
+	in := application.CheckoutInput{
+		PlanID:          plan.ID,
+		Email:           body.ContactEmail,
+		Name:            body.ContactName,
+		DisplayCurrency: body.DisplayCurrency,
+		PublicationURL:  body.LastPublicationURL,
+		PaymentMethod:   body.PaymentMethod,
+		CustomData:      custom,
+	}
+	if uid := userIDFromContext(r.Context()); uid != "" {
+		in.UserID = uid
+	}
+	res, err := h.Checkout.Checkout(r.Context(), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusCreated, res)
 }
 
 func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {

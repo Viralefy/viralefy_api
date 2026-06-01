@@ -51,6 +51,10 @@ type CheckoutInput struct {
 	ProfileID      string // se target_type == profile (perfil já cadastrado)
 	NewProfile     *NewProfileInline
 	PublicationURL string // se target_type == publication
+	// CustomData carrega o snapshot do formulário customizado da categoria
+	// (Account Recovery, BMs, perfis). Schema livre; é guardado na order
+	// e replayed no ticket aberto após pagamento.
+	CustomData     map[string]any
 	// Pagamento:
 	PaymentMethod string // "gateway" (default) ou "credits". credits exige usuário logado com saldo
 	UserID        string // setado pelo handler quando usuário está logado; obrigatório p/ credits
@@ -180,6 +184,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		SettlementCurrency: quote.SettlementCurrency,
 		SettlementAmount:   quote.SettlementAmount,
 		PaymentMethod:      in.PaymentMethod,
+		CustomData:         in.CustomData,
 	}
 	if profileID != "" {
 		order.ProfileID = &profileID

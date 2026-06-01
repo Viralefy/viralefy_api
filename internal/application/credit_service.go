@@ -33,7 +33,7 @@ func (s *CreditService) Spend(ctx context.Context, userID string, cents int64, d
 		UserID:      userID,
 		Type:        domain.CreditTxSpend,
 		AmountCents: -cents, // saída
-		Currency:    "BRL",
+		Currency:    "USD",
 		OrderID:     orderID,
 		Description: description,
 	})
@@ -49,7 +49,7 @@ func (s *CreditService) Recharge(ctx context.Context, userID string, cents int64
 		UserID:      userID,
 		Type:        domain.CreditTxRecharge,
 		AmountCents: cents, // entrada
-		Currency:    "BRL",
+		Currency:    "USD",
 		InvoiceID:   invoiceID,
 		Description: description,
 	})
@@ -65,7 +65,7 @@ func (s *CreditService) AdminAdjustment(ctx context.Context, userID string, delt
 		UserID:      userID,
 		Type:        domain.CreditTxAdjustment,
 		AmountCents: delta,
-		Currency:    "BRL",
+		Currency:    "USD",
 		Description: description,
 	})
 }

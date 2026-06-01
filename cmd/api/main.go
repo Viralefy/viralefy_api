@@ -14,6 +14,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/config"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/persistence/postgres"
 	httphandler "github.com/viralefy/viralefy_api/internal/interface/http"
@@ -110,7 +111,12 @@ func main() {
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
 	ticketSvc := application.NewTicketService(ticketRepo, userRepo, emailSender, cfg.SiteURL)
-	paymentReceiver := application.NewPaymentReceiver(invoiceRepo, orderRepo, invoiceSvc)
+	paymentReceiver := application.NewPaymentReceiver(invoiceRepo, orderRepo, planRepo, ticketSvc, invoiceSvc)
+
+	turnstileSvc := turnstile.NewService(cfg.TurnstileSecretKey)
+	if !turnstileSvc.Enabled() {
+		logger.Warn("turnstile disabled (TURNSTILE_SECRET_KEY empty) — anti-bot bypass")
+	}
 
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
@@ -127,6 +133,7 @@ func main() {
 		Credits:         creditSvc,
 		Invoices:        invoiceSvc,
 		PaymentReceiver: paymentReceiver,
+		Turnstile:       turnstileSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

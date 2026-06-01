@@ -67,7 +67,8 @@ func (s *InvoiceService) Create(ctx context.Context, in CreateInvoiceInput) (*do
 		ID:                 uuid.New().String(),
 		UserID:             in.UserID,
 		AmountCents:        in.AmountCents,
-		Currency:           "BRL",
+		// Currency é a moeda canônica do invoice (= moeda base). USD ✓.
+		Currency:           "USD",
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
 		SettlementCurrency: quote.SettlementCurrency,

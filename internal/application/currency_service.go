@@ -49,7 +49,7 @@ func (s *CurrencyService) Update(ctx context.Context, in UpdateCurrencyInput) (*
 	return s.repo.GetByCode(ctx, in.Code)
 }
 
-// Quote é a conversão de um preço base (BRL cents) para a moeda de exibição
+// Quote é a conversão de um preço base (USD cents) para a moeda de exibição
 // escolhida e a moeda de liquidação correspondente.
 type Quote struct {
 	DisplayCurrency    string `json:"display_currency"`
@@ -62,15 +62,15 @@ type Quote struct {
 
 // QuoteForPlan resolve o preço de exibição e de liquidação de um plano usando
 // os preços manuais por moeda (prices). Se a moeda escolhida não tiver preço
-// manual, faz fallback para conversão a partir do BRL (brlCents). Resolve a
-// moeda de liquidação (ex.: USD exibe, USDT cobra). Moeda inválida cai em BRL.
-func (s *CurrencyService) QuoteForPlan(ctx context.Context, prices map[string]string, brlCents int, displayCode string) (Quote, error) {
+// manual, faz fallback para conversão a partir do USD (usdCents). Resolve a
+// moeda de liquidação (ex.: USDT exibe, USDT cobra). Moeda inválida cai em USD.
+func (s *CurrencyService) QuoteForPlan(ctx context.Context, prices map[string]string, usdCents int, displayCode string) (Quote, error) {
 	if displayCode == "" {
-		displayCode = "BRL"
+		displayCode = "USD"
 	}
 	display, err := s.repo.GetByCode(ctx, displayCode)
 	if err != nil || !display.DisplayEnabled {
-		display, err = s.repo.GetByCode(ctx, "BRL")
+		display, err = s.repo.GetByCode(ctx, "USD")
 		if err != nil {
 			return Quote{}, err
 		}
@@ -82,18 +82,19 @@ func (s *CurrencyService) QuoteForPlan(ctx context.Context, prices map[string]st
 	return Quote{
 		DisplayCurrency:    display.Code,
 		DisplaySymbol:      display.Symbol,
-		DisplayAmount:      amountFor(prices, brlCents, *display),
+		DisplayAmount:      amountFor(prices, usdCents, *display),
 		SettlementCurrency: settle.Code,
 		SettlementSymbol:   settle.Symbol,
-		SettlementAmount:   amountFor(prices, brlCents, *settle),
+		SettlementAmount:   amountFor(prices, usdCents, *settle),
 	}, nil
 }
 
-// amountFor devolve o preço manual da moeda se existir; senão converte do BRL.
-func amountFor(prices map[string]string, brlCents int, c domain.Currency) string {
+// amountFor devolve o preço manual da moeda se existir; senão converte do USD
+// usando o rate (= unidades da moeda por 1 USD).
+func amountFor(prices map[string]string, usdCents int, c domain.Currency) string {
 	if v, ok := prices[c.Code]; ok && v != "" {
 		return v
 	}
-	amount := float64(brlCents) / 100.0 * c.Rate
+	amount := float64(usdCents) / 100.0 * c.Rate
 	return strconv.FormatFloat(amount, 'f', c.Decimals, 64)
 }

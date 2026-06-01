@@ -27,6 +27,9 @@ type Config struct {
 	ResendBaseURL  string
 
 	SiteURL string // URL pública da loja (https://viralefy.com) — usada em e-mails
+
+	// Cloudflare Turnstile (anti-bot). Secret vazia = bypass (HML/dev).
+	TurnstileSecretKey string
 }
 
 func Load() (Config, error) {
@@ -58,6 +61,8 @@ func Load() (Config, error) {
 		ResendBaseURL:  getenv("RESEND_BASE_URL", "https://api.resend.com"),
 
 		SiteURL: getenv("SITE_URL", getenv("NEXT_PUBLIC_SITE_URL", "https://viralefy.com")),
+
+		TurnstileSecretKey: getenv("TURNSTILE_SECRET_KEY", ""),
 	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")

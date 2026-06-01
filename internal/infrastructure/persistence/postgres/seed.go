@@ -84,6 +84,11 @@ func seedCategories(ctx context.Context, db *DB) error {
 		{"visualizacoes_instagram", "Instagram views", 9},
 		{"visualizacoes_tiktok", "TikTok views", 10},
 		{"servicos", "Premium services", 11},
+		// 4 categorias da fase marketplace + recovery.
+		{"recuperacao_perfil", "Account recovery", 12},
+		{"bms_facebook", "Facebook Business Managers", 13},
+		{"perfis_redes", "Aged social profiles", 14},
+		{"emails_validados", "Validated email packs", 15},
 	}
 	for _, c := range cats {
 		_, err := db.pool.Exec(ctx, `
@@ -98,7 +103,9 @@ func seedCategories(ctx context.Context, db *DB) error {
 }
 
 func seedCurrencies(ctx context.Context, db *DB) error {
-	// rate = unidades da moeda por 1 BRL. base = BRL (rate 1).
+	// rate = unidades da moeda por 1 USD. Base = USD (rate 1).
+	// Migração 011 fez o switch BRL-base → USD-base; mantemos espelhado aqui
+	// pros fresh installs.
 	curs := []struct {
 		code, name, symbol, kind, settlement string
 		rate                                 float64
@@ -107,11 +114,11 @@ func seedCurrencies(ctx context.Context, db *DB) error {
 	}{
 		// USDT é a moeda padrão da storefront. Símbolo "$" porque é 1:1
 		// com USD e ficaria estranho mostrar "₮ 5,00" pro mundo todo.
-		{"USDT", "Tether", "$", "crypto", "USDT", 0.185, 2, 1, true},
-		{"USD", "Dólar", "$", "fiat", "USDT", 0.185, 2, 2, true},
-		{"EUR", "Euro", "€", "fiat", "EUR", 0.17, 2, 3, true},
-		{"BRL", "Real", "R$", "fiat", "BRL", 1.0, 2, 4, true},
-		{"BTC", "Bitcoin", "₿", "crypto", "BTC", 0.0000019, 8, 5, true},
+		{"USDT", "Tether", "$", "crypto", "USDT", 1.0, 2, 1, true},
+		{"USD", "Dólar", "$", "fiat", "USDT", 1.0, 2, 2, true},
+		{"EUR", "Euro", "€", "fiat", "EUR", 0.92, 2, 3, true},
+		{"BRL", "Real", "R$", "fiat", "BRL", 5.41, 2, 4, true},
+		{"BTC", "Bitcoin", "₿", "crypto", "BTC", 0.0000103, 8, 5, true},
 	}
 	for _, c := range curs {
 		_, err := db.pool.Exec(ctx, `
@@ -262,14 +269,45 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"1,000,000 video views TikTok", "Mega viral", "visualizacoes_tiktok", "tiktok", "publication", 1000000, 1400, 10000},
 
 		// ===== PREMIUM SERVICES (consulting — profile) =====
+		// Account recovery saiu de servicos pra própria categoria abaixo.
 		{"Profile audit", "Diagnosis + recommendations", "servicos", "instagram", "profile", 1, 39, 1},
 		{"Monthly management", "Profile management + strategy", "servicos", "instagram", "profile", 1, 99, 2},
 		{"Product launch", "Integrated 30-day campaign", "servicos", "instagram", "profile", 1, 499, 3},
-		{"Account recovery", "Recovery support for suspended or hacked accounts", "servicos", "instagram", "profile", 1, 199, 4},
 		{"New account setup", "Full setup and optimization for a new account", "servicos", "instagram", "profile", 1, 149, 5},
 		{"Anti-shadowban package", "Shadowban diagnosis and removal plan", "servicos", "instagram", "profile", 1, 129, 6},
 		{"Competitor analysis", "In-depth analysis of direct competitors", "servicos", "instagram", "profile", 1, 79, 7},
 		{"Verification support", "Support to apply for the verified badge", "servicos", "instagram", "profile", 1, 299, 8},
+
+		// ===== ACCOUNT RECOVERY (LP dedicada por país) ============================
+		// Único item nessa categoria — preço alto reflete o esforço de
+		// negociação direta com Meta/ByteDance e o risco operacional. Compra
+		// abre ticket automático (handler em application/order).
+		{"Account recovery", "Full account recovery — Instagram/TikTok suspended, hacked or restricted", "recuperacao_perfil", "instagram", "profile", 1, 10000, 1},
+
+		// ===== MARKETPLACE — Facebook BMs (target_type=publication; qty=tier) =====
+		// Quantidade representa o "limite de gasto diário" do BM em USD.
+		{"BM Trial — daily limit $50",  "Brand-new BM, daily spend cap $50.  Use to warm pixels.", "bms_facebook", "facebook", "publication", 50,   40,  1},
+		{"BM Starter — daily limit $250", "Verified BM, daily cap $250, 7+ days aged.",            "bms_facebook", "facebook", "publication", 250,  90,  2},
+		{"BM Pro — daily limit $1k",    "Verified BM, daily cap $1k, 30+ days aged.",              "bms_facebook", "facebook", "publication", 1000, 200, 3},
+		{"BM Premium — daily limit $5k", "Verified BM, daily cap $5k, 90+ days aged + spend history.", "bms_facebook", "facebook", "publication", 5000, 450, 4},
+
+		// ===== MARKETPLACE — Aged social profiles (Instagram / TikTok) ===========
+		// Quantidade = seguidores reais do perfil entregue.
+		{"Aged Instagram profile — 1k real followers",  "Instagram profile, 1k followers, 30+ days aged, full handover.", "perfis_redes", "instagram", "profile", 1000,  30,  1},
+		{"Aged Instagram profile — 5k real followers",  "Instagram profile, 5k followers, 60+ days aged, full handover.", "perfis_redes", "instagram", "profile", 5000,  90,  2},
+		{"Aged Instagram profile — 10k real followers", "Instagram profile, 10k followers, 90+ days aged, full handover.", "perfis_redes", "instagram", "profile", 10000, 150, 3},
+		{"Aged TikTok profile — 1k real followers",    "TikTok profile, 1k followers, 30+ days aged, full handover.",    "perfis_redes", "tiktok", "profile", 1000,  35,  10},
+		{"Aged TikTok profile — 5k real followers",    "TikTok profile, 5k followers, 60+ days aged, full handover.",    "perfis_redes", "tiktok", "profile", 5000,  110, 11},
+		{"Aged TikTok profile — 10k real followers",   "TikTok profile, 10k followers, 90+ days aged, full handover.",   "perfis_redes", "tiktok", "profile", 10000, 180, 12},
+		{"Aged Instagram profile — 50k real followers", "Instagram profile, 50k followers, 180+ days aged, full handover.","perfis_redes", "instagram", "profile", 50000, 300, 4},
+
+		// ===== MARKETPLACE — Validated email packs (qty=quantos emails) ==========
+		{"100 validated emails",   "Pack of 100 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 100,   5,  1},
+		{"250 validated emails",   "Pack of 250 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 250,   11, 2},
+		{"500 validated emails",   "Pack of 500 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 500,   20, 3},
+		{"1,000 validated emails", "Pack of 1,000 validated, deliverable email addresses.", "emails_validados", "instagram", "publication", 1000,  35, 4},
+		{"5,000 validated emails", "Pack of 5,000 validated, deliverable email addresses.", "emails_validados", "instagram", "publication", 5000,  150, 5},
+		{"10,000 validated emails","Pack of 10,000 validated, deliverable email addresses.","emails_validados", "instagram", "publication", 10000, 280, 6},
 	}
 	for _, p := range plans {
 		var existingID string

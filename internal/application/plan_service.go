@@ -18,6 +18,22 @@ func NewPlanService(repo domain.PlanRepository) *PlanService {
 	return &PlanService{repo: repo}
 }
 
+// ListByCategory devolve os planos ativos de uma categoria. Usado pelo
+// handler de Account Recovery pra encontrar o plano-âncora da categoria.
+func (s *PlanService) ListByCategory(ctx context.Context, category string) ([]domain.Plan, error) {
+	all, err := s.repo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Plan, 0, 4)
+	for _, p := range all {
+		if p.Category == category {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 func (s *PlanService) ListPublic(ctx context.Context) ([]domain.Plan, error) {
 	return s.repo.ListActive(ctx)
 }
@@ -39,8 +55,9 @@ type CreatePlanInput struct {
 }
 
 func (s *PlanService) Create(ctx context.Context, in CreatePlanInput) (*domain.Plan, error) {
-	// Preço base BRL pode vir em PriceCents ou em Prices["BRL"].
-	if cents, ok := brlCents(in.Prices); ok {
+	// Preço base USD pode vir em PriceCents ou em Prices["USD"]. USD é a
+	// moeda canônica do sistema; BRL/EUR/USDT são derivadas via plan_prices.
+	if cents, ok := usdCents(in.Prices); ok {
 		in.PriceCents = cents
 	}
 	if in.Name == "" || in.FollowersQty <= 0 || in.PriceCents <= 0 {
@@ -48,11 +65,11 @@ func (s *PlanService) Create(ctx context.Context, in CreatePlanInput) (*domain.P
 	}
 	currency := in.Currency
 	if currency == "" {
-		currency = "BRL"
+		currency = "USD"
 	}
 	category := in.Category
 	if category == "" {
-		category = "seguidores"
+		category = "seguidores_instagram"
 	}
 	p := domain.Plan{
 		ID:           uuid.New().String(),
@@ -68,7 +85,7 @@ func (s *PlanService) Create(ctx context.Context, in CreatePlanInput) (*domain.P
 	if err := s.repo.Create(ctx, p); err != nil {
 		return nil, err
 	}
-	prices := withBRL(in.Prices, in.PriceCents)
+	prices := withUSD(in.Prices, in.PriceCents)
 	if err := s.repo.UpsertPrices(ctx, p.ID, prices); err != nil {
 		return nil, err
 	}
@@ -93,7 +110,7 @@ func (s *PlanService) Update(ctx context.Context, in UpdatePlanInput) (*domain.P
 	if err != nil {
 		return nil, err
 	}
-	if cents, ok := brlCents(in.Prices); ok {
+	if cents, ok := usdCents(in.Prices); ok {
 		in.PriceCents = cents
 	}
 	if in.Name != "" {
@@ -120,7 +137,7 @@ func (s *PlanService) Update(ctx context.Context, in UpdatePlanInput) (*domain.P
 		return nil, err
 	}
 	if len(in.Prices) > 0 {
-		if err := s.repo.UpsertPrices(ctx, existing.ID, withBRL(in.Prices, existing.PriceCents)); err != nil {
+		if err := s.repo.UpsertPrices(ctx, existing.ID, withUSD(in.Prices, existing.PriceCents)); err != nil {
 			return nil, err
 		}
 	}
@@ -131,9 +148,10 @@ func (s *PlanService) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
 }
 
-// brlCents extrai o preço BRL do mapa de preços manuais (ex.: "9.90" -> 990).
-func brlCents(prices map[string]string) (int, bool) {
-	v, ok := prices["BRL"]
+// usdCents extrai o preço USD do mapa de preços manuais (ex.: "2.50" -> 250).
+// USD é a moeda base canônica do sistema.
+func usdCents(prices map[string]string) (int, bool) {
+	v, ok := prices["USD"]
 	if !ok || v == "" {
 		return 0, false
 	}
@@ -144,14 +162,14 @@ func brlCents(prices map[string]string) (int, bool) {
 	return int(math.Round(f * 100)), true
 }
 
-// withBRL garante que BRL esteja presente no mapa, derivando de price_cents.
-func withBRL(prices map[string]string, cents int) map[string]string {
+// withUSD garante que USD esteja presente no mapa, derivando de price_cents.
+func withUSD(prices map[string]string, cents int) map[string]string {
 	out := map[string]string{}
 	for k, v := range prices {
 		out[k] = v
 	}
-	if _, ok := out["BRL"]; !ok {
-		out["BRL"] = strconv.FormatFloat(float64(cents)/100.0, 'f', 2, 64)
+	if _, ok := out["USD"]; !ok {
+		out["USD"] = strconv.FormatFloat(float64(cents)/100.0, 'f', 2, 64)
 	}
 	return out
 }

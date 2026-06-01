@@ -33,6 +33,15 @@ type Order struct {
 	PublicationURL     *string           `json:"publication_url,omitempty"`
 	PaymentMethod      string            `json:"payment_method"`     // gateway | credits
 	CreditsUsedCents   int               `json:"credits_used_cents"` // se payment_method=credits
+	// CustomData carrega snapshot do formulário customizado da categoria
+	// (ex.: account recovery — data do banimento, motivo estimado, última
+	// publicação). Schema livre por categoria; backend não interpreta, só
+	// repassa pro ticket aberto após pagamento.
+	CustomData         map[string]any    `json:"custom_data,omitempty"`
+	// TicketID linka o pedido ao ticket aberto automaticamente quando
+	// `Status` virou `paid` em categorias que abrem ticket (recovery,
+	// BMs, perfis).
+	TicketID           *string           `json:"ticket_id,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 }
@@ -55,4 +64,6 @@ type OrderRepository interface {
 	ListAllView(ctx context.Context) ([]OrderView, error)
 	UpdateStatus(ctx context.Context, id string, status OrderStatus, externalRef *string) error
 	UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error
+	// LinkTicket associa um ticket aberto pós-pagamento ao pedido.
+	LinkTicket(ctx context.Context, orderID, ticketID string) error
 }
