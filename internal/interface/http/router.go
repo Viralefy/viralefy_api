@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -47,6 +48,13 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 	r.Method(http.MethodGet, "/ready", ReadyHandler(ready))
 	r.Method(http.MethodGet, "/metrics", observability.MetricsHandler())
 
+	// Middlewares de segurança aplicados a mutations sensíveis (checkout
+	// e recovery): idempotência por header Idempotency-Key e rate-limit
+	// 30 req/min/IP (anti-abuso da API, não anti-spam de email — esse
+	// gargalo já é trancado pelo fluxo "comunicação só pós-pagamento").
+	idem := IdempotencyMiddleware(h.DB)
+	mutationLimiter := NewRateLimiter(30, time.Minute).Middleware()
+
 	r.Route("/v1", func(r chi.Router) {
 		// Público
 		r.Get("/plans", h.ListPublicPlans)
@@ -54,13 +62,13 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/currencies", h.ListCurrencies)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
-		r.With(optionalUserAuth).Post("/checkout", h.CreateCheckout)
+		r.With(mutationLimiter, idem, optionalUserAuth).Post("/checkout", h.CreateCheckout)
 
 		// Account Recovery: aceita formulário (data do banimento, motivo,
 		// última publicação) e dispara checkout do plano de recuperação;
 		// após payment, abre ticket automático com snapshot do form.
-		// Protegido por Turnstile.
-		r.With(optionalUserAuth).Post("/recovery-request", h.CreateRecoveryRequest)
+		// Protegido por Turnstile + rate-limit + idempotência.
+		r.With(mutationLimiter, idem, optionalUserAuth).Post("/recovery-request", h.CreateRecoveryRequest)
 
 		// Webhooks dos providers (sem auth — assinatura é validada no handler).
 		r.Post("/webhooks/woovi", h.WooviWebhook)
@@ -88,6 +96,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Get("/invoices", h.MeListInvoices)
 
 			r.Get("/tickets", h.MeListTickets)
+			r.Get("/tickets/open-count", h.MeOpenTicketsCount)
 			r.Post("/tickets", h.MeCreateTicket)
 			r.Get("/tickets/{id}", h.MeGetTicket)
 			r.Post("/tickets/{id}/messages", h.MeReplyTicket)

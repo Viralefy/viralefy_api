@@ -13,6 +13,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/config"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/notify"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
@@ -111,7 +112,17 @@ func main() {
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
 	ticketSvc := application.NewTicketService(ticketRepo, userRepo, emailSender, cfg.SiteURL)
-	paymentReceiver := application.NewPaymentReceiver(invoiceRepo, orderRepo, planRepo, ticketSvc, invoiceSvc)
+	notifier := notify.NewWebhookClient(cfg.AdminWebhookURL)
+	if !notifier.Enabled() {
+		logger.Warn("admin webhook disabled (ADMIN_WEBHOOK_URL empty)")
+	}
+	paymentReceiver := application.NewPaymentReceiver(
+		invoiceRepo, orderRepo, planRepo, userRepo,
+		ticketSvc, invoiceSvc, emailSender, notifier, cfg.SiteURL,
+	)
+
+	auditRepo := postgres.NewAuditRepo(db)
+	auditSvc := application.NewAuditService(auditRepo)
 
 	turnstileSvc := turnstile.NewService(cfg.TurnstileSecretKey)
 	if !turnstileSvc.Enabled() {
@@ -134,6 +145,8 @@ func main() {
 		Invoices:        invoiceSvc,
 		PaymentReceiver: paymentReceiver,
 		Turnstile:       turnstileSvc,
+		Audit:           auditSvc,
+		DB:              db,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

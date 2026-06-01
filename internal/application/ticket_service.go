@@ -62,6 +62,22 @@ func (s *TicketService) ListForUser(ctx context.Context, userID string) ([]domai
 	return s.repo.ListByUser(ctx, userID)
 }
 
+// CountOpenForUser conta os tickets com status open OR pending — o que o
+// usuário precisa de atenção. Usado no badge do Header da loja.
+func (s *TicketService) CountOpenForUser(ctx context.Context, userID string) (int, error) {
+	list, err := s.repo.ListByUser(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range list {
+		if t.Status == domain.TicketStatusOpen || t.Status == domain.TicketStatusPending {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // GetForUser garante que o ticket pertence ao usuário antes de devolver.
 func (s *TicketService) GetForUser(ctx context.Context, ticketID, userID string) (*TicketDetail, error) {
 	t, err := s.repo.GetByID(ctx, ticketID)

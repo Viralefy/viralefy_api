@@ -25,6 +25,13 @@ var CategoriesOpeningTicket = map[string]bool{
 	"perfis_redes":       true,
 }
 
+// AdminNotifier é a porta de saída para webhook administrativo (Slack/
+// Discord). Implementação concreta em infrastructure/external/notify.
+type AdminNotifier interface {
+	Send(ctx context.Context, text string) error
+	Enabled() bool
+}
+
 // PaymentReceiver é o ponto único de entrada para confirmações de pagamento
 // (webhook ou ação manual do admin). Idempotente: chamadas repetidas para
 // o mesmo external_ref / id já pago são no-op.
@@ -32,23 +39,35 @@ type PaymentReceiver struct {
 	invoices   domain.InvoiceRepository
 	orders     domain.OrderRepository
 	plans      domain.PlanRepository
+	users      domain.UserRepository
 	tickets    *TicketService
 	invoiceSvc *InvoiceService
+	email      EmailSender
+	notifier   AdminNotifier
+	siteURL    string
 }
 
 func NewPaymentReceiver(
 	invoices domain.InvoiceRepository,
 	orders domain.OrderRepository,
 	plans domain.PlanRepository,
+	users domain.UserRepository,
 	tickets *TicketService,
 	invoiceSvc *InvoiceService,
+	email EmailSender,
+	notifier AdminNotifier,
+	siteURL string,
 ) *PaymentReceiver {
 	return &PaymentReceiver{
 		invoices:   invoices,
 		orders:     orders,
 		plans:      plans,
+		users:      users,
 		tickets:    tickets,
 		invoiceSvc: invoiceSvc,
+		email:      email,
+		notifier:   notifier,
+		siteURL:    siteURL,
 	}
 }
 
@@ -90,9 +109,9 @@ func (r *PaymentReceiver) ConfirmByExternalRef(ctx context.Context, ref string) 
 			"order_id", ord.ID,
 			"external_ref", ref,
 		)
-		// Refresh + handoff manual em categorias que abrem ticket.
+		// Refresh + handoff (email, ticket, admin notify) — não bloqueia.
 		if refreshed, err := r.orders.GetByID(ctx, ord.ID); err == nil && refreshed != nil {
-			r.maybeOpenTicket(ctx, refreshed)
+			r.onOrderPaid(ctx, refreshed)
 		}
 		return "order", nil
 	}
@@ -113,24 +132,40 @@ func (r *PaymentReceiver) MarkOrderPaid(ctx context.Context, orderID string) err
 		return err
 	}
 	if refreshed, err := r.orders.GetByID(ctx, ord.ID); err == nil && refreshed != nil {
-		r.maybeOpenTicket(ctx, refreshed)
+		r.onOrderPaid(ctx, refreshed)
 	}
 	return nil
+}
+
+// onOrderPaid agrupa todos os efeitos colaterais pós-pagamento:
+//   1. Abre ticket pra categorias high-touch (recovery/BM/perfil)
+//   2. Manda email de confirmação pro comprador
+//   3. Dispara webhook administrativo (Slack/Discord)
+//
+// Cada passo é best-effort: falhas são logadas mas não revertem o pagamento.
+// Comunicações com o cliente só rolam aqui — isso é o que evita spam, já
+// que sem pagamento confirmado nada sai.
+func (r *PaymentReceiver) onOrderPaid(ctx context.Context, ord *domain.Order) {
+	plan, err := r.plans.GetByID(ctx, ord.PlanID)
+	if err != nil || plan == nil {
+		observability.FromContext(ctx).Warn("onOrderPaid: plan lookup failed",
+			"order_id", ord.ID, "plan_id", ord.PlanID)
+		return
+	}
+	r.maybeOpenTicket(ctx, ord, plan)
+	r.sendConfirmationEmail(ctx, ord, plan)
+	r.notifyAdmin(ctx, ord, plan)
 }
 
 // maybeOpenTicket abre ticket de suporte automaticamente para categorias
 // com handoff manual (Account Recovery, BMs, perfis). Idempotente — só abre
 // se o pedido ainda não tem ticket_id. Falhas não bloqueiam a confirmação
 // (logamos e seguimos).
-func (r *PaymentReceiver) maybeOpenTicket(ctx context.Context, ord *domain.Order) {
+func (r *PaymentReceiver) maybeOpenTicket(ctx context.Context, ord *domain.Order, plan *domain.Plan) {
 	if ord.TicketID != nil && *ord.TicketID != "" {
 		return
 	}
-	if r.tickets == nil || r.plans == nil {
-		return
-	}
-	plan, err := r.plans.GetByID(ctx, ord.PlanID)
-	if err != nil || plan == nil {
+	if r.tickets == nil {
 		return
 	}
 	if !CategoriesOpeningTicket[plan.Category] {
@@ -209,4 +244,93 @@ func (r *PaymentReceiver) formatTicketBody(ord *domain.Order, plan *domain.Plan)
 		}
 	}
 	return b.String()
+}
+
+// sendConfirmationEmail manda recibo + próximos passos pro comprador.
+// Categorias de handoff manual ganham um corpo dedicado (ticket aberto);
+// categorias automáticas (followers, likes, etc.) ganham um recibo simples.
+// Best-effort: erro só vai pro log.
+func (r *PaymentReceiver) sendConfirmationEmail(ctx context.Context, ord *domain.Order, plan *domain.Plan) {
+	if r.email == nil || r.users == nil {
+		return
+	}
+	u, err := r.users.GetByID(ctx, ord.UserID)
+	if err != nil || u == nil || u.Email == "" {
+		return
+	}
+
+	manualHandoff := CategoriesOpeningTicket[plan.Category]
+	accountURL := strings.TrimRight(r.siteURL, "/") + "/account"
+
+	var subject, text, html string
+	if manualHandoff {
+		subject = fmt.Sprintf("Payment received — Order #%s (%s)", ord.ID[:8], plan.Name)
+		text = fmt.Sprintf(`Hi %s,
+
+We received your payment for "%s" (Order #%s).
+
+A support ticket was opened automatically with the details you sent. Our team will follow up there shortly.
+
+Track the ticket and conversation: %s
+
+— Viralefy team
+`, u.Name, plan.Name, ord.ID[:8], accountURL)
+		html = fmt.Sprintf(`<p>Hi %s,</p>
+<p>We received your payment for <strong>%s</strong> (Order <code>#%s</code>).</p>
+<p>A support ticket was opened automatically with the details you sent. Our team will follow up there shortly.</p>
+<p><a href="%s">Track the ticket in your account</a>.</p>
+<p>— Viralefy team</p>`, u.Name, plan.Name, ord.ID[:8], accountURL)
+	} else {
+		subject = fmt.Sprintf("Payment received — Order #%s", ord.ID[:8])
+		text = fmt.Sprintf(`Hi %s,
+
+Payment received for "%s" (Order #%s). Delivery starts within 30 minutes.
+
+Track the order: %s
+
+— Viralefy team
+`, u.Name, plan.Name, ord.ID[:8], accountURL)
+		html = fmt.Sprintf(`<p>Hi %s,</p>
+<p>Payment received for <strong>%s</strong> (Order <code>#%s</code>). Delivery starts within 30 minutes.</p>
+<p><a href="%s">Track the order in your account</a>.</p>
+<p>— Viralefy team</p>`, u.Name, plan.Name, ord.ID[:8], accountURL)
+	}
+
+	if err := r.email.Send(ctx, EmailMessage{
+		To:       u.Email,
+		Subject:  subject,
+		TextBody: text,
+		HTMLBody: html,
+	}); err != nil {
+		observability.FromContext(ctx).Warn("confirmation email failed",
+			"order_id", ord.ID, "error", err.Error())
+	}
+}
+
+// notifyAdmin dispara webhook administrativo (Slack/Discord) quando o
+// pedido é high-touch (recovery/BM/perfil). Para categorias automáticas,
+// não enche o canal — admin só precisa ser notificado do que precisa de
+// atenção manual. Best-effort.
+func (r *PaymentReceiver) notifyAdmin(ctx context.Context, ord *domain.Order, plan *domain.Plan) {
+	if r.notifier == nil || !r.notifier.Enabled() {
+		return
+	}
+	if !CategoriesOpeningTicket[plan.Category] {
+		return
+	}
+	ticketLink := strings.TrimRight(r.siteURL, "/") + "/account"
+	if ord.TicketID != nil && *ord.TicketID != "" {
+		ticketLink = strings.TrimRight(r.siteURL, "/") + "/tickets/" + *ord.TicketID
+	}
+	text := fmt.Sprintf("🔔 New paid order in *%s*\n• Plan: %s\n• Amount: %s %s\n• Order: `#%s`\n• Triage: %s",
+		plan.Category,
+		plan.Name,
+		ord.SettlementAmount, ord.SettlementCurrency,
+		ord.ID[:8],
+		ticketLink,
+	)
+	if err := r.notifier.Send(ctx, text); err != nil {
+		observability.FromContext(ctx).Warn("admin webhook failed",
+			"order_id", ord.ID, "error", err.Error())
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/persistence/postgres"
 )
 
 type Handlers struct {
@@ -30,6 +31,11 @@ type Handlers struct {
 	Invoices        *application.InvoiceService
 	PaymentReceiver *application.PaymentReceiver
 	Turnstile       *turnstile.Service
+	Audit           *application.AuditService
+	// DB é exposto pra middleware de idempotency (lê/escreve em
+	// idempotency_keys). Quase nenhum handler precisa, mas o pattern de
+	// passar via Handlers mantém os middlewares chainable.
+	DB *postgres.DB
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -254,6 +260,22 @@ func (h *Handlers) MeListTickets(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, list)
 }
 
+// MeOpenTicketsCount alimenta o badge "💬 (N)" do Header. Conta tickets
+// em status open ou pending (que exigem ação do user ou do suporte).
+func (h *Handlers) MeOpenTicketsCount(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	n, err := h.Tickets.CountOpenForUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]int{"open": n})
+}
+
 func (h *Handlers) MeCreateTicket(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r.Context())
 	if userID == "" {
@@ -448,6 +470,7 @@ func (h *Handlers) AdminCreatePlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	h.logAudit(r, "create", "plan", p.ID, nil, p)
 	writeData(w, http.StatusCreated, p)
 }
 
@@ -459,20 +482,56 @@ func (h *Handlers) AdminUpdatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body.ID = id
+	// Snapshot do plano antes do update (best-effort) — usado no diff.
+	before, _ := h.Plans.GetByID(r.Context(), id)
 	p, err := h.Plans.Update(r.Context(), body)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	h.logAudit(r, "update", "plan", p.ID, before, p)
 	writeData(w, http.StatusOK, p)
 }
 
 func (h *Handlers) AdminDeletePlan(w http.ResponseWriter, r *http.Request) {
-	if err := h.Plans.Delete(r.Context(), chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	before, _ := h.Plans.GetByID(r.Context(), id)
+	if err := h.Plans.Delete(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
 	}
+	h.logAudit(r, "delete", "plan", id, before, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// logAudit é um wrapper enxuto que recolhe actor (do contexto) + meta
+// (IP, user-agent) e dispara o AuditService de forma não-bloqueante. Se
+// AuditService não estiver configurado (HML sem migration), vira no-op.
+func (h *Handlers) logAudit(r *http.Request, action, targetType, targetID string, before, after any) {
+	if h.Audit == nil {
+		return
+	}
+	actorType := "system"
+	actorID := "system"
+	if p, ok := principalFromContext(r.Context()); ok && p.AdminID != "" {
+		actorType = "admin"
+		actorID = p.AdminID
+	}
+	h.Audit.Log(r.Context(), application.AuditEntry{
+		ActorType:  actorType,
+		ActorID:    actorID,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		Before:     before,
+		After:      after,
+		Metadata: map[string]any{
+			"ip":         clientIP(r),
+			"user_agent": r.Header.Get("User-Agent"),
+			"path":       r.URL.Path,
+			"method":     r.Method,
+		},
+	})
 }
 
 func (h *Handlers) AdminListGateways(w http.ResponseWriter, r *http.Request) {

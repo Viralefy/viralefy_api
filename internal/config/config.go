@@ -30,6 +30,10 @@ type Config struct {
 
 	// Cloudflare Turnstile (anti-bot). Secret vazia = bypass (HML/dev).
 	TurnstileSecretKey string
+
+	// Webhook genérico (Slack/Discord-compatible) pra notificar admin
+	// quando um ticket de high-touch (recovery/BM/perfil) abre. Vazio = no-op.
+	AdminWebhookURL string
 }
 
 func Load() (Config, error) {
@@ -63,6 +67,7 @@ func Load() (Config, error) {
 		SiteURL: getenv("SITE_URL", getenv("NEXT_PUBLIC_SITE_URL", "https://viralefy.com")),
 
 		TurnstileSecretKey: getenv("TURNSTILE_SECRET_KEY", ""),
+		AdminWebhookURL:    getenv("ADMIN_WEBHOOK_URL", ""),
 	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")

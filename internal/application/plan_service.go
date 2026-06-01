@@ -18,6 +18,12 @@ func NewPlanService(repo domain.PlanRepository) *PlanService {
 	return &PlanService{repo: repo}
 }
 
+// GetByID expõe o repo pra handlers que precisam de snapshot pre/post-mutation
+// (audit log). Idêntico ao repo, só pra não vazar repo nos handlers.
+func (s *PlanService) GetByID(ctx context.Context, id string) (*domain.Plan, error) {
+	return s.repo.GetByID(ctx, id)
+}
+
 // ListByCategory devolve os planos ativos de uma categoria. Usado pelo
 // handler de Account Recovery pra encontrar o plano-âncora da categoria.
 func (s *PlanService) ListByCategory(ctx context.Context, category string) ([]domain.Plan, error) {
