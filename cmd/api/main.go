@@ -134,6 +134,16 @@ func main() {
 	// criação do pedido. Ver checkout_service.SetMetricCapture.
 	checkoutSvc.SetMetricCapture(metricCaptureSvc)
 
+	// Cron de delivery capture: 24h pós-pago, tira snapshot da 2ª fonte de
+	// verdade (perfil/post público) e grava em orders.delivery_metrics.
+	// Substitui o fluxo manual de admin clicar "Capturar delivery agora" em
+	// cada pedido. Intervalo 15min, batch 25 — config padrão tunada pra HML.
+	deliveryCron := &application.DeliveryCaptureCron{
+		Orders:  orderRepo,
+		Metrics: metricCaptureSvc,
+	}
+	deliveryCron.Start(context.Background())
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,

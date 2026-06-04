@@ -91,4 +91,11 @@ type OrderRepository interface {
 	// SetDeliveryMetrics grava o snapshot pós-entrega usado pra verificar
 	// se o gateway efetivamente entregou.
 	SetDeliveryMetrics(ctx context.Context, orderID string, metrics map[string]any, source string) error
+	// ListReadyForDeliveryCapture devolve pedidos em status=paid que ainda
+	// não tiveram delivery capturado e cuja última atualização foi anterior
+	// a `olderThan`. Usado pelo cron de delivery capture (24h pós-pago) pra
+	// rodar o scrape de fonte secundária sem depender do admin. Limita a `n`
+	// pra capar a rajada por iteração; cron roda em intervalo e pega o resto
+	// nos próximos ticks.
+	ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]Order, error)
 }

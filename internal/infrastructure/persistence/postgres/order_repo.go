@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/viralefy/viralefy_api/internal/domain"
@@ -305,4 +306,28 @@ func (r *OrderRepo) SetDeliveryMetrics(ctx context.Context, orderID string, metr
 		return domain.ErrNotFound
 	}
 	return nil
+}
+
+// ListReadyForDeliveryCapture devolve pedidos pagos sem snapshot de delivery
+// e cuja última atualização foi anterior a `olderThan` (proxy de "ficou
+// pago há pelo menos N horas" — orders.paid_at não existe ainda como coluna
+// dedicada; updated_at é setado quando UpdateStatus vira 'paid'). Ordena
+// pelo mais antigo primeiro pra recuperar a fila de delivery atrasada
+// quando o cron volta após um downtime.
+func (r *OrderRepo) ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]domain.Order, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.pool.Query(ctx, `SELECT `+orderCols+`
+		FROM orders
+		WHERE status = 'paid'
+		  AND delivery_captured_at IS NULL
+		  AND updated_at < $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOrders(rows)
 }
