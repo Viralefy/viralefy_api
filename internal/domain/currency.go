@@ -3,9 +3,10 @@ package domain
 import "context"
 
 // Currency descreve uma moeda suportada.
-// Rate = unidades desta moeda por 1 BRL (moeda base). SettlementCode indica
-// em qual moeda a cobrança é efetivamente liquidada (ex.: USD é exibida, mas
-// liquidada em USDT).
+// Rate = unidades desta moeda por 1 USD (moeda base canônica desde migração
+// 011 — antes era BRL). USDT/USD = 1, EUR ≈ 0.92, BRL ≈ 5.41, BTC ≈ 0.0000103.
+// SettlementCode indica em qual moeda a cobrança é efetivamente liquidada
+// (ex.: USD é exibida, mas liquidada em USDT pra evitar bandeira).
 type Currency struct {
 	Code           string  `json:"code"`
 	Name           string  `json:"name"`
