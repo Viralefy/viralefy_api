@@ -22,6 +22,10 @@ type Plan struct {
 	Prices    map[string]string `json:"prices"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
+	// Aggregate de reviews — populado on-demand pelo handler público
+	// (ListPublicPlans) e usado pelo front pra renderizar aggregateRating
+	// no JSON-LD. nil quando não há reviews visíveis ainda.
+	AggregateRating *AggregateRating `json:"aggregate_rating,omitempty"`
 }
 
 type PlanRepository interface {

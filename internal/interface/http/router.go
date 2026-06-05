@@ -58,7 +58,9 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 	r.Route("/v1", func(r chi.Router) {
 		// Público
 		r.Get("/plans", h.ListPublicPlans)
+		r.Get("/plans/{id}/reviews", h.PublicReviewsForPlan)
 		r.Get("/categories", h.ListCategories)
+		r.Get("/categories/{code}/reviews", h.PublicReviewsForCategory)
 		r.Get("/currencies", h.ListCurrencies)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
@@ -100,6 +102,10 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Post("/tickets", h.MeCreateTicket)
 			r.Get("/tickets/{id}", h.MeGetTicket)
 			r.Post("/tickets/{id}/messages", h.MeReplyTicket)
+
+			// Reviews — submit post-delivery + read own.
+			r.With(mutationLimiter, idem).Post("/reviews", h.MeCreateReview)
+			r.Get("/reviews/by-order/{order_id}", h.MeGetReviewForOrder)
 		})
 
 		// Admin — RBAC: cada rota exige uma permissão (após AdminAuth).

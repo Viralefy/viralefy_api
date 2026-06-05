@@ -39,6 +39,7 @@ type Handlers struct {
 	// passar via Handlers mantém os middlewares chainable.
 	DB      *postgres.DB
 	Metrics *application.MetricCaptureService
+	Reviews *application.ReviewService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -69,6 +70,16 @@ func (h *Handlers) ListPublicPlans(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	// Enriquece com aggregateRating por plano — front emite no JSON-LD do
+	// Product e do AggregateOffer. N+1 queries é aceitável aqui: catálogo
+	// total < 100 planos e essa rota é cacheada (s-maxage no Caddy).
+	if h.Reviews != nil {
+		for i := range plans {
+			if agg, err := h.Reviews.AggregateByPlan(r.Context(), plans[i].ID); err == nil && agg != nil {
+				plans[i].AggregateRating = agg
+			}
+		}
 	}
 	writeData(w, http.StatusOK, plans)
 }

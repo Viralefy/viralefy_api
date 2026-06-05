@@ -134,6 +134,11 @@ func main() {
 	// criação do pedido. Ver checkout_service.SetMetricCapture.
 	checkoutSvc.SetMetricCapture(metricCaptureSvc)
 
+	// Reviews — coleta pós-entrega + JSON-LD aggregateRating.
+	reviewRepo := postgres.NewReviewRepo(db)
+	reviewRequestRepo := postgres.NewReviewRequestRepo(db)
+	reviewSvc := application.NewReviewService(reviewRepo, orderRepo, planRepo)
+
 	// Cron de delivery capture: 24h pós-pago, tira snapshot da 2ª fonte de
 	// verdade (perfil/post público) e grava em orders.delivery_metrics.
 	// Substitui o fluxo manual de admin clicar "Capturar delivery agora" em
@@ -143,6 +148,16 @@ func main() {
 		Metrics: metricCaptureSvc,
 	}
 	deliveryCron.Start(context.Background())
+
+	// Cron de review request: 7d pós-pago, envia email "how was your order?"
+	// com link pra /orders/{id}/review. Alimenta aggregateRating no JSON-LD
+	// das páginas de plano (rich result + social proof real, sem fake).
+	reviewCron := &application.ReviewRequestCron{
+		Repo:    reviewRequestRepo,
+		Email:   emailSender,
+		SiteURL: cfg.SiteURL,
+	}
+	reviewCron.Start(context.Background())
 
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
@@ -163,6 +178,7 @@ func main() {
 		Audit:           auditSvc,
 		DB:              db,
 		Metrics:         metricCaptureSvc,
+		Reviews:         reviewSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).
