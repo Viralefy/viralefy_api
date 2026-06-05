@@ -35,20 +35,25 @@ func seedRoles(ctx context.Context, db *DB) error {
 		{"superadmin", "Super Admin", []string{
 			"plans:read", "plans:write", "gateways:read", "gateways:write",
 			"currencies:read", "currencies:write", "orders:read",
-			"tickets:read", "tickets:write", "admins:manage",
+			"tickets:read", "tickets:write",
+			"reviews:read", "reviews:moderate",
+			"admins:manage",
 		}},
 		{"manager", "Gerente", []string{
 			"plans:read", "plans:write", "gateways:read", "gateways:write",
 			"currencies:read", "currencies:write", "orders:read",
 			"tickets:read", "tickets:write",
+			"reviews:read", "reviews:moderate",
 		}},
 		{"support", "Suporte", []string{
 			"plans:read", "gateways:read", "currencies:read", "orders:read",
 			"tickets:read", "tickets:write",
+			"reviews:read",
 		}},
 		{"viewer", "Leitura", []string{
 			"plans:read", "gateways:read", "currencies:read", "orders:read",
 			"tickets:read",
+			"reviews:read",
 		}},
 	}
 	for _, r := range roles {

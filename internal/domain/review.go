@@ -60,6 +60,25 @@ type ReviewRepository interface {
 	AggregateByCategory(ctx context.Context, category string) (*AggregateRating, error)
 	// SetVisibility é a moderação manual (admin).
 	SetVisibility(ctx context.Context, id string, visible bool) error
+	// ListAdmin devolve os últimos N reviews pra moderação. Inclui invisíveis,
+	// hidrata user.name/email e plan.name pra UI mostrar contexto sem N+1.
+	ListAdmin(ctx context.Context, filter AdminReviewFilter, limit int) ([]AdminReview, error)
+	GetByID(ctx context.Context, id string) (*Review, error)
+}
+
+// AdminReviewFilter — filtros opcionais pro ListAdmin.
+type AdminReviewFilter struct {
+	OnlyHidden bool   // true → só não-visíveis (pra fila de moderação)
+	PlanID     string // opcional
+	Category   string // opcional
+}
+
+// AdminReview = Review + hidratação básica de user/plan pra UI.
+type AdminReview struct {
+	Review
+	UserName  string `json:"user_name"`
+	UserEmail string `json:"user_email"`
+	PlanName  string `json:"plan_name"`
 }
 
 // ReviewRequestCandidate é um pedido elegível pra receber o email de pedido

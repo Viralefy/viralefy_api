@@ -21,8 +21,8 @@ import (
 //      - Hit + hash diferente → 409 (RFC draft idempotency-header §2.5).
 //      - Miss → encaminha pra próxima handler, captura status+body, persiste,
 //        devolve normal.
-//   2. Records têm TTL de 24h via expires_at — limpos por job futuro
-//      (NOTE: implementar cron de cleanup; por enquanto a tabela cresce).
+//   2. Records têm TTL de 24h via expires_at — limpos pelo
+//      IdempotencyCleanupCron (application/idempotency_cleanup_cron.go).
 //
 // Sem header = bypass (middleware é opt-in via header).
 func IdempotencyMiddleware(db *postgres.DB) func(http.Handler) http.Handler {

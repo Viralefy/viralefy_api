@@ -139,6 +139,82 @@ func (r *ReviewRepo) SetVisibility(ctx context.Context, id string, visible bool)
 	return nil
 }
 
+func (r *ReviewRepo) GetByID(ctx context.Context, id string) (*domain.Review, error) {
+	row := r.db.pool.QueryRow(ctx, `SELECT `+reviewCols+` FROM reviews WHERE id=$1`, id)
+	var rev domain.Review
+	err := row.Scan(&rev.ID, &rev.UserID, &rev.OrderID, &rev.PlanID, &rev.PlanCategory,
+		&rev.CountryCode, &rev.Rating, &rev.Title, &rev.Body, &rev.Visible,
+		&rev.CreatedAt, &rev.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rev, nil
+}
+
+func (r *ReviewRepo) ListAdmin(ctx context.Context, filter domain.AdminReviewFilter, limit int) ([]domain.AdminReview, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	// Filtro dinâmico via index args (1..N). Postgres planeja bem mesmo com
+	// `1=1` na cláusula quando o predicado é constante.
+	q := `SELECT r.id, r.user_id, r.order_id, r.plan_id, r.plan_category, r.country_code,
+		r.rating, r.title, r.body, r.visible, r.created_at, r.updated_at,
+		COALESCE(u.name,''), COALESCE(u.email,''), COALESCE(p.name,'')
+		FROM reviews r
+		LEFT JOIN users u ON u.id = r.user_id
+		LEFT JOIN plans p ON p.id = r.plan_id
+		WHERE 1=1`
+	args := []any{}
+	idx := 1
+	if filter.OnlyHidden {
+		q += " AND r.visible = FALSE"
+	}
+	if filter.PlanID != "" {
+		q += " AND r.plan_id = $" + itoa(idx)
+		args = append(args, filter.PlanID)
+		idx++
+	}
+	if filter.Category != "" {
+		q += " AND r.plan_category = $" + itoa(idx)
+		args = append(args, filter.Category)
+		idx++
+	}
+	q += " ORDER BY r.created_at DESC LIMIT $" + itoa(idx)
+	args = append(args, limit)
+
+	rows, err := r.db.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.AdminReview{}
+	for rows.Next() {
+		var a domain.AdminReview
+		if err := rows.Scan(&a.ID, &a.UserID, &a.OrderID, &a.PlanID, &a.PlanCategory,
+			&a.CountryCode, &a.Rating, &a.Title, &a.Body, &a.Visible,
+			&a.CreatedAt, &a.UpdatedAt,
+			&a.UserName, &a.UserEmail, &a.PlanName); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// itoa local minúsculo pra montar placeholders sem importar strconv só pra isso.
+func itoa(n int) string {
+	if n < 10 {
+		return string([]byte{byte('0' + n)})
+	}
+	// suficiente pro nosso uso (idx <= ~5)
+	a := itoa(n / 10)
+	b := itoa(n % 10)
+	return a + b
+}
+
 // --- ReviewRequestRepository ---
 
 // ReviewRequestRepo agrupa as queries que o cron de envio precisa. Encosta no

@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -101,6 +102,54 @@ func (h *Handlers) PublicReviewsForPlan(w http.ResponseWriter, r *http.Request) 
 		"reviews":   reviews,
 		"aggregate": agg, // nil quando 0 reviews — front omite o bloco
 	})
+}
+
+// --- Admin: reviews moderation ---
+
+// AdminListReviews — GET /v1/admin/reviews
+// Query: ?only_hidden=1&plan_id=...&category=...&limit=200
+func (h *Handlers) AdminListReviews(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	filter := domain.AdminReviewFilter{
+		OnlyHidden: q.Get("only_hidden") == "1" || q.Get("only_hidden") == "true",
+		PlanID:     strings.TrimSpace(q.Get("plan_id")),
+		Category:   strings.TrimSpace(q.Get("category")),
+	}
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	list, err := h.Reviews.AdminList(r.Context(), filter, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+// AdminPatchReviewVisibility — PATCH /v1/admin/reviews/{id}
+// Body: { "visible": true|false }
+func (h *Handlers) AdminPatchReviewVisibility(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Visible *bool `json:"visible"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Visible == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Reviews.SetVisibility(r.Context(), id, *body.Visible); err != nil {
+		writeError(w, err)
+		return
+	}
+	rev, err := h.Reviews.AdminGet(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, rev)
 }
 
 // PublicReviewsForCategory — GET /v1/categories/{code}/reviews

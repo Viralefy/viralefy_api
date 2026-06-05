@@ -60,6 +60,18 @@ func (f *fakeReviewRepo) SetVisibility(ctx context.Context, id string, visible b
 	f.visibility[id] = visible
 	return nil
 }
+func (f *fakeReviewRepo) ListAdmin(ctx context.Context, filter domain.AdminReviewFilter, limit int) ([]domain.AdminReview, error) {
+	return nil, nil
+}
+func (f *fakeReviewRepo) GetByID(ctx context.Context, id string) (*domain.Review, error) {
+	for _, r := range f.existing {
+		if r.ID == id {
+			r := r
+			return &r, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
 
 // fakeOrderRepoForReview: implementa só o que ReviewService.Create chama
 // (GetByID). Os outros métodos devolvem erro pra forçar regressão visível.

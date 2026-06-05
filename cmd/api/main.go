@@ -159,6 +159,11 @@ func main() {
 	}
 	reviewCron.Start(context.Background())
 
+	// Cron de cleanup idempotency_keys (TTL 24h). Resolve a tech debt do
+	// middleware de idempotência — sem cleanup, a tabela cresce indefinido.
+	idemCleanup := &application.IdempotencyCleanupCron{DB: db}
+	idemCleanup.Start(context.Background())
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,

@@ -13,6 +13,8 @@ const (
 	PermOrdersRead      = "orders:read"
 	PermTicketsRead     = "tickets:read"
 	PermTicketsWrite    = "tickets:write"
+	PermReviewsRead     = "reviews:read"
+	PermReviewsModerate = "reviews:moderate"
 	PermAdminsManage    = "admins:manage"
 )
 

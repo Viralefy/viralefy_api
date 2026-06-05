@@ -116,3 +116,13 @@ func (s *ReviewService) AggregateByCategory(ctx context.Context, category string
 func (s *ReviewService) SetVisibility(ctx context.Context, id string, visible bool) error {
 	return s.reviews.SetVisibility(ctx, id, visible)
 }
+
+// AdminList — moderação. Filtros opcionais (apenas escondidos, por plano,
+// por categoria). Limita a 200 por chamada (handler aceita query param).
+func (s *ReviewService) AdminList(ctx context.Context, filter domain.AdminReviewFilter, limit int) ([]domain.AdminReview, error) {
+	return s.reviews.ListAdmin(ctx, filter, limit)
+}
+
+func (s *ReviewService) AdminGet(ctx context.Context, id string) (*domain.Review, error) {
+	return s.reviews.GetByID(ctx, id)
+}
