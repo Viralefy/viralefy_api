@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"os"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -408,18 +409,31 @@ func seedGateway(ctx context.Context, db *DB) error {
 	return nil
 }
 
+// seedAdmin cria o admin inicial se a tabela estiver vazia. Email e senha
+// vêm do ambiente (ADMIN_BOOTSTRAP_EMAIL / ADMIN_BOOTSTRAP_PASSWORD). Sem
+// essas variáveis o seed NÃO insere nada — antes hardcodava
+// `admin@viralefy.local` / `SimTest!Admin2026`, o que vazava credencial
+// real em HML (a senha do seed virava a do superadmin de prod).
 func seedAdmin(ctx context.Context, db *DB) error {
 	var n int
 	_ = db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM admins`).Scan(&n)
 	if n > 0 {
 		return nil
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte("SimTest!Admin2026"), 12)
+	email := os.Getenv("ADMIN_BOOTSTRAP_EMAIL")
+	pass := os.Getenv("ADMIN_BOOTSTRAP_PASSWORD")
+	if email == "" || pass == "" {
+		// Sem bootstrap configurado: deixa a tabela vazia. Operador
+		// promove um admin manualmente via SQL ou roda uma seed task
+		// pontual com as envs setadas.
+		return nil
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass), 12)
 	if err != nil {
 		return err
 	}
 	_, err = db.pool.Exec(ctx, `
 		INSERT INTO admins (id, email, password_hash, name)
-		VALUES ($1,'admin@viralefy.local',$2,'Administrador')`, uuid.New().String(), string(hash))
+		VALUES ($1,$2,$3,'Administrador')`, uuid.New().String(), email, string(hash))
 	return err
 }

@@ -28,7 +28,7 @@ make dev
 | CRUD | `/v1/admin/gateways` | Bearer admin |
 | GET | `/v1/admin/orders` | Bearer admin |
 
-Admin seed: `admin@viralefy.local` / `SimTest!Admin2026`
+Admin seed: lê `ADMIN_BOOTSTRAP_EMAIL` + `ADMIN_BOOTSTRAP_PASSWORD` do ambiente. Sem essas envs, a tabela `admins` fica vazia e o operador promove um admin manualmente (via SQL ou seed task pontual). Não há mais credencial default.
 
 ## OpenAPI
 
