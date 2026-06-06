@@ -48,6 +48,18 @@ var (
 		},
 		[]string{"provider", "status"},
 	)
+
+	// PlanPriceDriftRows mede quantos rows em plan_prices têm `amount` ≠
+	// (price_cents/100 * rate). Cresce → algum admin esqueceu de cascatear
+	// (regressão 2026-06-06) OU alguém escreveu manual override (esperado,
+	// se for poucos rows). Alerta sugerido: > 5 rows por moeda por > 12h.
+	PlanPriceDriftRows = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "viralefy_plan_price_drift_rows",
+			Help: "Quantidade de linhas em plan_prices fora da fórmula USD * rate por moeda.",
+		},
+		[]string{"currency_code"},
+	)
 )
 
 var (
@@ -67,6 +79,7 @@ func InitMetrics() *prometheus.Registry {
 			HTTPRequestDurationSeconds,
 			DBQueryDurationSeconds,
 			GatewayCallbacksTotal,
+			PlanPriceDriftRows,
 		)
 		metricsRegistry = reg
 	})

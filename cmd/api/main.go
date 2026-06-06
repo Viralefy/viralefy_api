@@ -164,6 +164,12 @@ func main() {
 	idemCleanup := &application.IdempotencyCleanupCron{DB: db}
 	idemCleanup.Start(context.Background())
 
+	// Cron de drift em plan_prices: alerta se algum row fugir da fórmula
+	// USD/100 * rate. Defensiva contra a regressão 2026-06-06 (rate change
+	// sem cascade) voltar.
+	priceDrift := &application.PlanPriceDriftCron{DB: db}
+	priceDrift.Start(context.Background())
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,
