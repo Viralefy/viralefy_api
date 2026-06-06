@@ -8,11 +8,15 @@ import (
 )
 
 type CurrencyService struct {
-	repo domain.CurrencyRepository
+	repo  domain.CurrencyRepository
+	plans domain.PlanRepository
 }
 
-func NewCurrencyService(repo domain.CurrencyRepository) *CurrencyService {
-	return &CurrencyService{repo: repo}
+// NewCurrencyService recebe o PlanRepository pra cascatear mudança de rate
+// em plan_prices. `plans` pode ser nil em testes que não exercem cascade
+// (Update vira no-op nessa parte).
+func NewCurrencyService(repo domain.CurrencyRepository, plans domain.PlanRepository) *CurrencyService {
+	return &CurrencyService{repo: repo, plans: plans}
 }
 
 // ListDisplayable retorna as moedas que o cliente pode escolher para exibição.
@@ -46,7 +50,17 @@ func (s *CurrencyService) Update(ctx context.Context, in UpdateCurrencyInput) (*
 	if err := s.repo.UpdateRate(ctx, in.Code, in.Rate, in.DisplayEnabled, in.SettlementCode); err != nil {
 		return nil, err
 	}
-	return s.repo.GetByCode(ctx, in.Code)
+	updated, err := s.repo.GetByCode(ctx, in.Code)
+	if err != nil {
+		return nil, err
+	}
+	// Cascade: aplica a nova rate em plan_prices pra que os cards reflitam
+	// o preço imediatamente. Falha aqui é warning — a moeda já foi salva e
+	// a UI cai no fallback rate-based via priceFor (front).
+	if s.plans != nil {
+		_ = s.plans.RecomputePricesForCurrency(ctx, updated.Code, updated.Rate, updated.Decimals)
+	}
+	return updated, nil
 }
 
 // Quote é a conversão de um preço base (USD cents) para a moeda de exibição

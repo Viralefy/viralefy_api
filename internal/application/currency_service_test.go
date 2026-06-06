@@ -63,7 +63,9 @@ func (f *fakeCurrencyRepo) UpdateRate(ctx context.Context, code string, rate flo
 }
 
 func newSvc() *CurrencyService {
-	return NewCurrencyService(newFakeCurrencyRepo())
+	// Plan repo é nil porque esses testes não exercem cascade — Update
+	// pula RecomputePricesForCurrency quando plans==nil (ver currency_service.go).
+	return NewCurrencyService(newFakeCurrencyRepo(), nil)
 }
 
 // ---------- QuoteForPlan: USD-cents canônico ----------

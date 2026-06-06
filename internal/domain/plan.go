@@ -36,4 +36,9 @@ type PlanRepository interface {
 	Update(ctx context.Context, p Plan) error
 	Delete(ctx context.Context, id string) error
 	UpsertPrices(ctx context.Context, planID string, prices map[string]string) error
+	// RecomputePricesForCurrency atualiza plan_prices.amount para TODOS os
+	// planos numa moeda dada, derivando de price_cents × rate. Chamado pelo
+	// CurrencyService.Update — sem isso, mudar a quotação no backoffice não
+	// reflete nos cards de plano (regressão 2026-06-06).
+	RecomputePricesForCurrency(ctx context.Context, code string, rate float64, decimals int) error
 }

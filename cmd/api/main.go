@@ -103,7 +103,7 @@ func main() {
 	)
 
 	planSvc := application.NewPlanService(planRepo)
-	currencySvc := application.NewCurrencyService(currencyRepo)
+	currencySvc := application.NewCurrencyService(currencyRepo, planRepo)
 	creditSvc := application.NewCreditService(creditRepo)
 	profileSvc := application.NewProfileService(profileRepo)
 	invoiceSvc := application.NewInvoiceService(invoiceRepo, gwRepo, userRepo, creditSvc, currencySvc, payments)

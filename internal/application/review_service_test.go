@@ -146,6 +146,9 @@ func (f *fakePlanRepoForReview) Delete(ctx context.Context, id string) error    
 func (f *fakePlanRepoForReview) UpsertPrices(ctx context.Context, planID string, prices map[string]string) error {
 	return nil
 }
+func (f *fakePlanRepoForReview) RecomputePricesForCurrency(ctx context.Context, code string, rate float64, decimals int) error {
+	return nil
+}
 
 // ---------- testes ----------
 

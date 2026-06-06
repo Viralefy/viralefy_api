@@ -133,3 +133,27 @@ func (r *PlanRepo) UpsertPrices(ctx context.Context, planID string, prices map[s
 	}
 	return nil
 }
+
+// RecomputePricesForCurrency aplica a nova rate em TODOS os plan_prices da
+// moeda — UPSERT pra também popular planos que ainda não tinham linha
+// nessa moeda. Single SQL: PostgreSQL formata o número com to_char usando
+// `decimals` zeros à direita.
+func (r *PlanRepo) RecomputePricesForCurrency(ctx context.Context, code string, rate float64, decimals int) error {
+	if decimals < 0 {
+		decimals = 0
+	}
+	fmtStr := "FM999999999990"
+	if decimals > 0 {
+		fmtStr += "."
+		for i := 0; i < decimals; i++ {
+			fmtStr += "0"
+		}
+	}
+	_, err := r.db.pool.Exec(ctx, `
+		INSERT INTO plan_prices (plan_id, currency_code, amount)
+		SELECT id, $1, to_char((price_cents::numeric / 100.0) * $2::numeric, $3)
+		FROM plans
+		ON CONFLICT (plan_id, currency_code) DO UPDATE SET amount = EXCLUDED.amount`,
+		code, rate, fmtStr)
+	return err
+}

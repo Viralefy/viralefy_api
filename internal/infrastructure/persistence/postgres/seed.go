@@ -354,22 +354,36 @@ func seedPlans(ctx context.Context, db *DB) error {
 }
 
 // seedPlanPrices gera os preços por moeda a partir do USD canônico usando
-// taxas fixas inline (as rates da tabela currencies estão defasadas e não são
-// fonte de verdade aqui). UPSERT refresca os valores em re-runs para manter o
-// seed authoritativo.
+// as rates ATUAIS da tabela `currencies` (USD/USDT/EUR/BRL/BTC + qualquer
+// outra que o admin tenha cadastrado).
+//
+// Antes lia rates hardcoded inline (BRL=5.41 fixo etc.) — qualquer edição
+// no backoffice via /currencies era sobrescrita no próximo boot do API.
+// Agora a tabela `currencies` é a fonte de verdade.
+//
+// UPSERT: re-runs atualizam o valor (mantém o seed autoritativo SEM ignorar
+// edições de rate).
 func seedPlanPrices(ctx context.Context, db *DB, planID string, usd float64) error {
-	// Taxas: USD → moeda. Mantidas inline porque a tabela currencies guarda
-	// rates históricas/manuais que não devem mandar no seed.
-	rates := []struct {
+	rows, err := db.pool.Query(ctx, `SELECT code, rate, decimals FROM currencies`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type rateRow struct {
 		code     string
 		rate     float64
 		decimals int
-	}{
-		{"USD", 1.0, 2},
-		{"USDT", 1.0, 2},
-		{"EUR", 0.92, 2},
-		{"BRL", 5.41, 2},
-		{"BTC", 0.0000103, 8},
+	}
+	var rates []rateRow
+	for rows.Next() {
+		var r rateRow
+		if err := rows.Scan(&r.code, &r.rate, &r.decimals); err != nil {
+			return err
+		}
+		rates = append(rates, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	for _, c := range rates {
 		amount := strconv.FormatFloat(usd*c.rate, 'f', c.decimals, 64)
