@@ -72,12 +72,15 @@ func (c *PlanPriceDriftCron) tick(ctx context.Context) {
 	// Conta por moeda: rows onde |actual - (USD * rate)| > tolerância da moeda
 	// (1 unidade da última casa decimal). Tolerância garante que arredondamento
 	// não dispare falsos positivos.
+	// `c.rate` é double precision na schema; cast pra numeric pra que
+	// ROUND(numeric, integer) seja resolvido (Postgres não tem overload
+	// ROUND(double, int)).
 	rows, err := c.DB.Pool().Query(tickCtx, `
 		SELECT
 			c.code,
 			COUNT(*) FILTER (
 				WHERE pp.amount::numeric IS DISTINCT FROM
-				      ROUND((p.price_cents::numeric / 100.0) * c.rate, c.decimals)
+				      ROUND((p.price_cents::numeric / 100.0) * c.rate::numeric, c.decimals)
 			) AS drift_rows
 		FROM plan_prices pp
 		JOIN plans p      ON p.id = pp.plan_id
