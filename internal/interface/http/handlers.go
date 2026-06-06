@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1252,6 +1253,93 @@ func (h *Handlers) AdminMarkOrderPaid(w http.ResponseWriter, r *http.Request) {
 
 func Health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// PublicStatus devolve o snapshot do estado dos componentes principais —
+// consumido pela página /status do storefront. Cada serviço tem um nome
+// curto (mostrado no card) e um status: "operational" | "degraded" | "down".
+//
+// "degraded" significa que o serviço respondeu mas com indicador anormal
+// (ex.: drift > 0 em plan_prices, latência DB > 200ms). "down" é falha
+// total. O HTTP status fica sempre 200 — quem consome decide o que mostrar.
+func (h *Handlers) PublicStatus(w http.ResponseWriter, r *http.Request) {
+	type service struct {
+		Name      string `json:"name"`
+		Status    string `json:"status"`
+		Detail    string `json:"detail,omitempty"`
+		LatencyMs int64  `json:"latency_ms,omitempty"`
+	}
+	type payload struct {
+		Timestamp string    `json:"timestamp"`
+		Overall   string    `json:"overall"`
+		Services  []service `json:"services"`
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	out := payload{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Services:  make([]service, 0, 4),
+	}
+
+	out.Services = append(out.Services, service{Name: "API", Status: "operational"})
+
+	// Database
+	dbStart := time.Now()
+	dbStatus := "operational"
+	dbDetail := ""
+	if h.DB != nil {
+		if err := h.DB.Pool().Ping(ctx); err != nil {
+			dbStatus = "down"
+			dbDetail = "ping failed"
+		} else if elapsed := time.Since(dbStart); elapsed > 200*time.Millisecond {
+			dbStatus = "degraded"
+			dbDetail = "slow ping"
+		}
+	}
+	out.Services = append(out.Services, service{
+		Name: "Database", Status: dbStatus, Detail: dbDetail,
+		LatencyMs: time.Since(dbStart).Milliseconds(),
+	})
+
+	// Plan prices invariant — total de drift atual.
+	driftStatus := "operational"
+	driftDetail := ""
+	if h.DB != nil {
+		var total int64
+		err := h.DB.Pool().QueryRow(ctx, `
+			SELECT COUNT(*) FROM plan_prices pp
+			JOIN plans p ON p.id=pp.plan_id
+			JOIN currencies c ON c.code=pp.currency_code
+			WHERE pp.amount::numeric IS DISTINCT FROM
+			      ROUND((p.price_cents::numeric / 100.0) * c.rate::numeric, c.decimals)
+			  AND pp.amount ~ '^[0-9]+(\.[0-9]+)?$'`).Scan(&total)
+		if err != nil {
+			driftStatus = "degraded"
+			driftDetail = "drift check failed"
+		} else if total > 0 {
+			driftStatus = "degraded"
+			driftDetail = "stale rows in plan_prices"
+		}
+	}
+	out.Services = append(out.Services, service{
+		Name: "Plan prices", Status: driftStatus, Detail: driftDetail,
+	})
+
+	// Overall = pior status entre os serviços.
+	out.Overall = "operational"
+	for _, s := range out.Services {
+		if s.Status == "down" {
+			out.Overall = "down"
+			break
+		}
+		if s.Status == "degraded" {
+			out.Overall = "degraded"
+		}
+	}
+
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ReadyHandler devolve um http.Handler que executa `check` (tipicamente db.Ping).

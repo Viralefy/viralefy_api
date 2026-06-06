@@ -65,6 +65,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/categories", h.ListCategories)
 		r.Get("/categories/{code}/reviews", h.PublicReviewsForCategory)
 		r.Get("/currencies", h.ListCurrencies)
+		r.Get("/status", h.PublicStatus)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(mutationLimiter, idem, optionalUserAuth).Post("/checkout", h.CreateCheckout)
