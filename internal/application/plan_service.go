@@ -91,6 +91,10 @@ func (s *PlanService) Create(ctx context.Context, in CreatePlanInput) (*domain.P
 	if err := s.repo.Create(ctx, p); err != nil {
 		return nil, err
 	}
+	// Ordem importa: 1º baseline auto-fill (USD/100 * rate em TODAS as moedas),
+	// 2º overrides manuais do admin (UpsertPrices). Se invertesse, o baseline
+	// sobrescrevia o override.
+	_ = s.repo.RecomputePricesForPlan(ctx, p.ID)
 	prices := withUSD(in.Prices, in.PriceCents)
 	if err := s.repo.UpsertPrices(ctx, p.ID, prices); err != nil {
 		return nil, err
@@ -142,6 +146,10 @@ func (s *PlanService) Update(ctx context.Context, in UpdatePlanInput) (*domain.P
 	if err := s.repo.Update(ctx, *existing); err != nil {
 		return nil, err
 	}
+	// SEMPRE re-baselineia: price_cents pode ter mudado, e plan_prices fica
+	// stale se in.Prices não veio populado (drift detectado em 2026-06-06,
+	// onde editar só o price_cents pela UI deixava as moedas defasadas).
+	_ = s.repo.RecomputePricesForPlan(ctx, existing.ID)
 	if len(in.Prices) > 0 {
 		if err := s.repo.UpsertPrices(ctx, existing.ID, withUSD(in.Prices, existing.PriceCents)); err != nil {
 			return nil, err

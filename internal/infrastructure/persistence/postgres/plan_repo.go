@@ -157,3 +157,21 @@ func (r *PlanRepo) RecomputePricesForCurrency(ctx context.Context, code string, 
 		code, rate, fmtStr)
 	return err
 }
+
+// RecomputePricesForPlan aplica a fórmula USD/100 * rate pra UM plano em
+// TODAS as moedas — chamado pelo PlanService.Update após mudar price_cents.
+// Formato dinâmico por moeda via concat na expression: 'FM…0' + (.0…) se
+// decimals > 0.
+func (r *PlanRepo) RecomputePricesForPlan(ctx context.Context, planID string) error {
+	_, err := r.db.pool.Exec(ctx, `
+		INSERT INTO plan_prices (plan_id, currency_code, amount)
+		SELECT p.id, c.code, to_char(
+		  ROUND((p.price_cents::numeric / 100.0) * c.rate::numeric, c.decimals),
+		  'FM999999999990' || CASE WHEN c.decimals > 0 THEN '.' || repeat('0', c.decimals) ELSE '' END
+		)
+		FROM plans p, currencies c
+		WHERE p.id = $1
+		ON CONFLICT (plan_id, currency_code) DO UPDATE SET amount = EXCLUDED.amount`,
+		planID)
+	return err
+}

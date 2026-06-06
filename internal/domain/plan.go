@@ -41,4 +41,9 @@ type PlanRepository interface {
 	// CurrencyService.Update — sem isso, mudar a quotação no backoffice não
 	// reflete nos cards de plano (regressão 2026-06-06).
 	RecomputePricesForCurrency(ctx context.Context, code string, rate float64, decimals int) error
+	// RecomputePricesForPlan atualiza plan_prices.amount em TODAS as moedas
+	// pra UM plano. Chamado pelo PlanService.Update/Create — sem isso, mudar
+	// só price_cents (sem `in.Prices`) deixa plan_prices stale para o resto
+	// das moedas (drift detectado em 2026-06-06).
+	RecomputePricesForPlan(ctx context.Context, planID string) error
 }

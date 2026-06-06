@@ -147,6 +147,9 @@ func (f *fakePlanRepoForCron) UpsertPrices(ctx context.Context, planID string, p
 func (f *fakePlanRepoForCron) RecomputePricesForCurrency(ctx context.Context, code string, rate float64, decimals int) error {
 	return nil
 }
+func (f *fakePlanRepoForCron) RecomputePricesForPlan(ctx context.Context, planID string) error {
+	return nil
+}
 
 type fakeProfileRepoForCron struct{}
 
