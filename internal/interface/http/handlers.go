@@ -1339,7 +1339,7 @@ func (h *Handlers) PublicStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, out)
+	writeData(w, http.StatusOK, out)
 }
 
 // ReadyHandler devolve um http.Handler que executa `check` (tipicamente db.Ping).
