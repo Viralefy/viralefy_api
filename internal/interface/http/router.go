@@ -57,6 +57,11 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 	// gargalo já é trancado pelo fluxo "comunicação só pós-pagamento").
 	idem := IdempotencyMiddleware(h.DB)
 	mutationLimiter := NewRateLimiter(30, time.Minute).Middleware()
+	// Login rate-limit: 10 tentativas / 15 min por IP. Cobre admin login,
+	// user login e register no mesmo bucket — atacante que tenta os 3
+	// alternando bate no mesmo limite. Turnstile bloqueia bots não-humanos;
+	// este limite protege contra password spray pós-Turnstile-solved.
+	loginLimiter := NewRateLimiter(10, 15*time.Minute).Middleware()
 
 	r.Route("/v1", func(r chi.Router) {
 		// Público
@@ -79,13 +84,14 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		// Webhooks dos providers (sem auth — assinatura é validada no handler).
 		r.Post("/webhooks/woovi", h.WooviWebhook)
 		r.Post("/webhooks/heleket", h.HeleketWebhook)
+		r.Post("/webhooks/resend", h.ResendWebhook)
 
 		// Auth admin (backoffice)
-		r.Post("/auth/login", h.AdminLogin)
+		r.With(loginLimiter).Post("/auth/login", h.AdminLogin)
 
 		// Auth de usuário (loja)
-		r.Post("/auth/user/register", h.UserRegister)
-		r.Post("/auth/user/login", h.UserLogin)
+		r.With(loginLimiter).Post("/auth/user/register", h.UserRegister)
+		r.With(loginLimiter).Post("/auth/user/login", h.UserLogin)
 
 		// Área logada do usuário
 		r.Route("/me", func(r chi.Router) {

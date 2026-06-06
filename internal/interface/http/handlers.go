@@ -38,9 +38,10 @@ type Handlers struct {
 	// DB é exposto pra middleware de idempotency (lê/escreve em
 	// idempotency_keys). Quase nenhum handler precisa, mas o pattern de
 	// passar via Handlers mantém os middlewares chainable.
-	DB      *postgres.DB
-	Metrics *application.MetricCaptureService
-	Reviews *application.ReviewService
+	DB         *postgres.DB
+	Metrics    *application.MetricCaptureService
+	Reviews    *application.ReviewService
+	EmailRepu  *application.EmailReputationService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1249,6 +1250,33 @@ func (h *Handlers) AdminMarkOrderPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ResendWebhook recebe eventos da Resend (delivered/bounced/complained).
+// Verificação de assinatura via header `svix-signature` (Resend usa Svix).
+// Por enquanto sem signature check — Resend Webhook Signing Key fica como
+// follow-up; HML é aceitável receber sem auth (endpoint não é mutativo
+// pra estado crítico, só atualiza reputation).
+//
+// Resposta 200 sempre que body parseia. Resend re-tenta em 5xx.
+func (h *Handlers) ResendWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := observability.FromContext(r.Context()).With("provider", "resend")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if h.EmailRepu == nil {
+		// Service não wireado — só registramos e seguimos.
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := h.EmailRepu.RecordResendEvent(r.Context(), body); err != nil {
+		logger.Warn("record resend event failed", "error", err.Error())
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func Health(w http.ResponseWriter, _ *http.Request) {

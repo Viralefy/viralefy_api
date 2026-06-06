@@ -178,6 +178,9 @@ func main() {
 	priceDrift := &application.PlanPriceDriftCron{DB: db}
 	priceDrift.Start(context.Background())
 
+	// Email reputation — alimentado por POST /v1/webhooks/resend.
+	emailRepuSvc := application.NewEmailReputationService(db)
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,
@@ -198,6 +201,7 @@ func main() {
 		DB:              db,
 		Metrics:         metricCaptureSvc,
 		Reviews:         reviewSvc,
+		EmailRepu:       emailRepuSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).
