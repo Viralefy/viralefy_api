@@ -41,6 +41,14 @@ func main() {
 	})
 	observability.InitMetrics()
 
+	// Sentry — no-op se SENTRY_DSN vazio. Flush no shutdown gracioso.
+	shutdownSentry := observability.InitSentry("viralefy-api", version, os.Getenv("APP_ENV"))
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = shutdownSentry(ctx)
+		cancel()
+	}()
+
 	tracerCtx, tracerCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	shutdownTracer, err := observability.InitTracer(tracerCtx, observability.TracingConfig{
 		ServiceName:    "viralefy-api",

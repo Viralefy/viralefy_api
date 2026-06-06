@@ -3,6 +3,7 @@ module github.com/viralefy/viralefy_api
 go 1.25.0
 
 require (
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/go-chi/cors v1.2.1
 	github.com/golang-jwt/jwt/v5 v5.2.1

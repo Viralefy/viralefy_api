@@ -33,6 +33,9 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		)
 	})
 	r.Use(ObservabilityMiddleware)
+	// Sentry antes do Recoverer pra capturar o panic com a request context;
+	// Recoverer ainda responde 500 ao client (Repanic=true entrega ao próximo).
+	r.Use(observability.SentryMiddleware())
 	r.Use(middleware.Recoverer)
 
 	r.Use(cors.Handler(cors.Options{
