@@ -142,6 +142,7 @@ func main() {
 	// suas construções.
 	checkoutSvc.SetReferrals(referralSvc)
 	checkoutSvc.SetFraud(fraudSvc)
+	// Tax setado depois quando taxSvc já existir (Wave 3).
 
 	// Wave 3 services
 	subscriptionSvc := application.NewSubscriptionService(subscriptionRepo, checkoutSvc)
@@ -151,6 +152,7 @@ func main() {
 	subscriptionCron := application.NewSubscriptionCron(subscriptionSvc)
 	subscriptionCron.Start(context.Background())
 	taxSvc := application.NewTaxService(taxRateRepo)
+	checkoutSvc.SetTax(taxSvc)
 	waSender := application.NewDryRunWhatsAppSender()
 	waSvc := application.NewWhatsAppService(db, waSender)
 	vendorSvc := application.NewVendorService(vendorRepo)

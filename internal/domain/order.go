@@ -21,6 +21,10 @@ type Order struct {
 	Status             OrderStatus       `json:"status"`
 	AmountCents        int               `json:"amount_cents"`
 	Currency           string            `json:"currency"`
+	// Tax (Fase 5.3) — VAT EU/GB. amount_cents JÁ inclui tax_usd_cents.
+	TaxCountryCode     string            `json:"tax_country_code,omitempty"`
+	TaxRatePct         float64           `json:"tax_rate_pct,omitempty"`
+	TaxUSDCents        int               `json:"tax_usd_cents,omitempty"`
 	DisplayCurrency    string            `json:"display_currency"`
 	DisplayAmount      string            `json:"display_amount"`
 	SettlementCurrency string            `json:"settlement_currency"`

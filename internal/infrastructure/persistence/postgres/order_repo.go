@@ -21,6 +21,7 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	custom_data, ticket_id, tracking,
 	baseline_metrics, baseline_captured_at, baseline_source,
 	delivery_metrics, delivery_captured_at, delivery_source,
+	COALESCE(tax_country_code,''), COALESCE(tax_rate_pct,0), COALESCE(tax_usd_cents,0),
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
@@ -44,13 +45,16 @@ func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 			display_currency, display_amount, settlement_currency, settlement_amount,
 			gateway_id, payment_extra,
 			profile_id, publication_url, payment_method, credits_used_cents,
-			custom_data, ticket_id, tracking)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+			custom_data, ticket_id, tracking,
+			tax_country_code, tax_rate_pct, tax_usd_cents)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+			NULLIF($20,''),NULLIF($21,0)::numeric,$22)`,
 		o.ID, o.UserID, o.PlanID, o.Status, o.AmountCents, o.Currency,
 		o.DisplayCurrency, o.DisplayAmount, o.SettlementCurrency, o.SettlementAmount,
 		o.GatewayID, extra,
 		o.ProfileID, o.PublicationURL, o.PaymentMethod, o.CreditsUsedCents,
-		custom, o.TicketID, tracking)
+		custom, o.TicketID, tracking,
+		o.TaxCountryCode, o.TaxRatePct, o.TaxUSDCents)
 	return err
 }
 
@@ -201,6 +205,7 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		&custom, &o.TicketID, &tracking,
 		&baseline, &o.BaselineCapturedAt, &o.BaselineSource,
 		&delivery, &o.DeliveryCapturedAt, &o.DeliverySource,
+		&o.TaxCountryCode, &o.TaxRatePct, &o.TaxUSDCents,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}

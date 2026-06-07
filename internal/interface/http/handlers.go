@@ -215,6 +215,8 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		PaymentMethod   string                        `json:"payment_method,omitempty"` // gateway | credits
 		CustomData      map[string]any                `json:"custom_data,omitempty"`
 		Tracking        map[string]any                `json:"tracking,omitempty"`
+		CouponCode      string                        `json:"coupon_code,omitempty"`
+		Country         string                        `json:"country,omitempty"` // alpha-2 lowercase, pra VAT EU
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -231,6 +233,8 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		PaymentMethod:   body.PaymentMethod,
 		CustomData:      body.CustomData,
 		Tracking:        h.enrichTracking(r, body.Tracking),
+		CouponCode:      body.CouponCode,
+		Country:         body.Country,
 	}
 	// Se houver token de usuário, força o userID do token (rota /v1/checkout é
 	// pública mas honra a autenticação opcional para credit/profile linkage).

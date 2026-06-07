@@ -34,6 +34,14 @@ type CheckoutService struct {
 	// fraud é opcional. Quando setado, IsBlocked(email|ip) é checado antes
 	// de qualquer trabalho — pedidos suspeitos rejeitados como Forbidden.
 	fraud *FraudService
+	// tax é opcional. Quando setado E in.Country é EU/GB, VAT é adicionado
+	// ao amount cobrado.
+	tax *TaxService
+}
+
+// SetTax opt-in pra cobrança de VAT no settlement_amount.
+func (s *CheckoutService) SetTax(svc *TaxService) {
+	s.tax = svc
 }
 
 // SetMetricCapture liga o capture pós-criação. Chamado uma vez no
@@ -119,6 +127,10 @@ type CheckoutInput struct {
 	// inexistente ou inelegível: rejeita o checkout inteiro pra evitar
 	// surpresa de "comprou achando que tinha desconto".
 	CouponCode string
+	// Country opcional (ISO alpha-2 lowercase). Quando informado e o
+	// TaxService está plugado, VAT é computado e adicionado ao amount.
+	// Front detecta via /api/geo + localStorage.
+	Country string
 }
 
 // NewProfileInline permite o usuário criar um perfil "no ato" do checkout
@@ -220,6 +232,16 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		couponCodeApplied = preview.Code
 	}
 
+	// Tax (Fase 5.3) — VAT EU/GB computado sobre o net (price - discount).
+	// Adicionado ao amountCents ANTES do Quote. País fora do catálogo →
+	// no-op silencioso (taxUSDCents=0, ratePct=0).
+	var taxUSDCents int
+	var taxRatePct float64
+	if s.tax != nil && in.Country != "" {
+		taxUSDCents, taxRatePct, _ = s.tax.ComputeTax(ctx, in.Country, amountCents)
+		amountCents += taxUSDCents
+	}
+
 	quote, err := s.currencies.QuoteForPlan(ctx, plan.Prices, amountCents, in.DisplayCurrency)
 	if err != nil {
 		return nil, err
@@ -291,8 +313,11 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		UserID:             userID,
 		PlanID:             plan.ID,
 		Status:             domain.OrderStatusPending,
-		AmountCents:        amountCents, // já descontado se cupom aplicou
+		AmountCents:        amountCents, // já descontado + tax se cupom/VAT aplicou
 		Currency:           plan.Currency,
+		TaxCountryCode:     in.Country,
+		TaxRatePct:         taxRatePct,
+		TaxUSDCents:        taxUSDCents,
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
 		SettlementCurrency: quote.SettlementCurrency,
