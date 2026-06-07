@@ -87,6 +87,7 @@ func main() {
 	categoryRepo := postgres.NewCategoryRepo(db)
 	currencyRepo := postgres.NewCurrencyRepo(db)
 	couponRepo := postgres.NewCouponRepo(db)
+	countryPPPRepo := postgres.NewCountryPPPRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -119,6 +120,9 @@ func main() {
 	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo, profileRepo, currencySvc, creditSvc, emailSender, payments, cfg.SiteURL)
 	couponSvc := application.NewCouponService(couponRepo)
 	checkoutSvc.SetCoupons(couponSvc)
+	orderSvc := application.NewOrderService(orderRepo, planRepo)
+	userNotifSvc := application.NewUserNotifService(db)
+	userDataSvc := application.NewUserDataService(db)
 	gwSvc := application.NewGatewayService(gwRepo)
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
@@ -184,6 +188,11 @@ func main() {
 	// Email reputation — alimentado por POST /v1/webhooks/resend.
 	emailRepuSvc := application.NewEmailReputationService(db)
 
+	// Cart abandonment: cron que pega orders pending 1-24h com payment_url
+	// e envia email "complete your purchase". Best-effort (errors warn).
+	cartAbandonCron := application.NewCartAbandonmentCron(db, emailSender, cfg.SiteURL)
+	cartAbandonCron.Start(context.Background())
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,
@@ -206,6 +215,10 @@ func main() {
 		Reviews:         reviewSvc,
 		EmailRepu:       emailRepuSvc,
 		Coupons:         couponSvc,
+		OrderSvc:        orderSvc,
+		Notifs:          userNotifSvc,
+		UserData:        userDataSvc,
+		CountryPPP:      countryPPPRepo,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

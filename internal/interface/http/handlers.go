@@ -43,6 +43,10 @@ type Handlers struct {
 	Reviews    *application.ReviewService
 	EmailRepu  *application.EmailReputationService
 	Coupons    *application.CouponService
+	OrderSvc   *application.OrderService
+	Notifs     *application.UserNotifService
+	UserData   *application.UserDataService
+	CountryPPP domain.CountryPPPRepository
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1471,4 +1475,182 @@ func ReadyHandler(check ReadyChecker) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
+}
+
+// MeGetOrder devolve o pedido completo do user logado pra renderizar a
+// página de tracking (/account/orders/{id}). Autorização concentrada no
+// OrderService — handler só extrai userID + id e delega. ErrNotFound
+// quando o pedido não existe OU pertence a outro user, sem distinção.
+func (h *Handlers) MeGetOrder(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	o, err := h.OrderSvc.GetByIDForUser(r.Context(), userID, chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, o)
+}
+
+// PublicCountryPPP devolve o catálogo de multipliers PPP (Fase 6.5). Front
+// baixa uma vez por sessão e aplica via priceForCountry() — display_amount
+// adaptado ao poder de compra local. USD canonical / settlement intocados.
+//
+// Lê via h.DB direto pra não exigir nova dep na struct Handlers (main loop
+// pluga CountryPPPRepository depois). Países ausentes equivalem a 1.00 — o
+// front trata. Pequeno (<50 linhas) → sem paginação.
+func (h *Handlers) PublicCountryPPP(w http.ResponseWriter, r *http.Request) {
+	if h.DB == nil {
+		writeData(w, http.StatusOK, []domain.CountryPPP{})
+		return
+	}
+	rows, err := h.DB.Pool().Query(r.Context(),
+		`SELECT country_code, multiplier FROM country_ppp ORDER BY country_code`,
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer rows.Close()
+	out := []domain.CountryPPP{}
+	for rows.Next() {
+		var p domain.CountryPPP
+		if err := rows.Scan(&p.Code, &p.Multiplier); err != nil {
+			writeError(w, err)
+			return
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, out)
+}
+
+// MeGetNotifPrefs — GET /v1/me/notif-prefs
+// Devolve as 4 chaves canônicas (order_updates, marketing, reviews,
+// cart_recovery) com defaults aplicados quando ausentes. Front usa pra
+// renderizar os toggles em /account/notifications.
+func (h *Handlers) MeGetNotifPrefs(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Notifs == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	prefs, err := h.Notifs.GetPrefs(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, prefs)
+}
+
+// MeUpdateNotifPrefs — PUT /v1/me/notif-prefs
+// Body: { order_updates?: bool, marketing?: bool, reviews?: bool, cart_recovery?: bool }
+// Merge no JSONB: chaves ausentes são preservadas; chaves fora da allowlist
+// devolvem 400. Idempotente.
+func (h *Handlers) MeUpdateNotifPrefs(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Notifs == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var body map[string]bool
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Notifs.UpdatePrefs(r.Context(), userID, body); err != nil {
+		writeError(w, err)
+		return
+	}
+	prefs, err := h.Notifs.GetPrefs(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, prefs)
+}
+
+// --- Manage my data (LGPD/GDPR — Fase 5.2) --- //
+
+// MeExportData devolve um JSON com tudo que o sistema sabe do usuário
+// (orders, tickets, profiles, reviews, prefs). Force-download via
+// Content-Disposition pra UX clara: o usuário clica e o browser salva
+// `viralefy-data.json` direto.
+func (h *Handlers) MeExportData(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.UserData == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	data, err := h.UserData.ExportData(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=viralefy-data.json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+// MeRequestDeletion agenda exclusão da conta. Body opcional: {"reason"}.
+// 30 dias de janela pra cancelar antes do hard-delete físico (cron futuro,
+// tech debt).
+func (h *Handlers) MeRequestDeletion(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.UserData == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	// Body pode vir vazio — sem reason é OK.
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := h.UserData.RequestDeletion(r.Context(), userID, body.Reason); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// MeCancelDeletion desfaz um pedido pendente. Idempotente — chamar sem
+// request ativa é no-op (204).
+func (h *Handlers) MeCancelDeletion(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.UserData == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.UserData.CancelDeletion(r.Context(), userID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

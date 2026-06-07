@@ -71,6 +71,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/categories/{code}/reviews", h.PublicReviewsForCategory)
 		r.Get("/currencies", h.ListCurrencies)
 		r.Get("/status", h.PublicStatus)
+		r.Get("/country-ppp", h.PublicCountryPPP)
 		r.With(mutationLimiter).Post("/coupons/validate", h.PublicValidateCoupon)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
@@ -98,6 +99,14 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Route("/me", func(r chi.Router) {
 			r.Use(userAuth)
 			r.Get("/orders", h.MeOrders)
+			r.Get("/orders/{id}", h.MeGetOrder)
+
+			r.Get("/notif-prefs", h.MeGetNotifPrefs)
+			r.Put("/notif-prefs", h.MeUpdateNotifPrefs)
+
+			r.Get("/data/export", h.MeExportData)
+			r.Post("/data/deletion", h.MeRequestDeletion)
+			r.Delete("/data/deletion", h.MeCancelDeletion)
 
 			r.Get("/profiles", h.MeListProfiles)
 			r.Post("/profiles", h.MeAddProfile)
