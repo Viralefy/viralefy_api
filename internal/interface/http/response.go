@@ -41,6 +41,16 @@ func writeError(w http.ResponseWriter, err error) {
 		code, status, msg = "FORBIDDEN", http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrConflict):
 		code, status, msg = "CONFLICT", http.StatusConflict, err.Error()
+	case errors.Is(err, domain.ErrCouponNotFound):
+		code, status, msg = "COUPON_NOT_FOUND", http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, domain.ErrCouponInactive),
+		errors.Is(err, domain.ErrCouponNotYetValid),
+		errors.Is(err, domain.ErrCouponExpired),
+		errors.Is(err, domain.ErrCouponMinOrderNotMet),
+		errors.Is(err, domain.ErrCouponCategoryNotAllowed),
+		errors.Is(err, domain.ErrCouponMaxUsesReached),
+		errors.Is(err, domain.ErrCouponFirstOrderOnly):
+		code, status, msg = "COUPON_INVALID", http.StatusUnprocessableEntity, err.Error()
 	}
 
 	body := errorBody{}
