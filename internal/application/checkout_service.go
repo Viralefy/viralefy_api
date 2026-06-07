@@ -131,6 +131,10 @@ type CheckoutInput struct {
 	// TaxService está plugado, VAT é computado e adicionado ao amount.
 	// Front detecta via /api/geo + localStorage.
 	Country string
+	// TargetCountry é o mercado da entrega — herdado da LP /[country]/.
+	// /us/instagram-followers → TargetCountry="us". Operador usa pra
+	// escolher supplier correto (seguidor americano vs alemão).
+	TargetCountry string
 }
 
 // NewProfileInline permite o usuário criar um perfil "no ato" do checkout
@@ -318,6 +322,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		TaxCountryCode:     in.Country,
 		TaxRatePct:         taxRatePct,
 		TaxUSDCents:        taxUSDCents,
+		TargetCountryCode:  in.TargetCountry,
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
 		SettlementCurrency: quote.SettlementCurrency,

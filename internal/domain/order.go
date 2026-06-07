@@ -25,6 +25,10 @@ type Order struct {
 	TaxCountryCode     string            `json:"tax_country_code,omitempty"`
 	TaxRatePct         float64           `json:"tax_rate_pct,omitempty"`
 	TaxUSDCents        int               `json:"tax_usd_cents,omitempty"`
+	// TargetCountryCode é o mercado da entrega — ex.: "de" se comprou na
+	// LP /de/instagram-followers (operador sabe que tem que pegar supplier
+	// alemão). Independente do tax_country (país do comprador).
+	TargetCountryCode  string            `json:"target_country_code,omitempty"`
 	DisplayCurrency    string            `json:"display_currency"`
 	DisplayAmount      string            `json:"display_amount"`
 	SettlementCurrency string            `json:"settlement_currency"`
