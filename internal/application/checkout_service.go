@@ -28,6 +28,12 @@ type CheckoutService struct {
 	// coupons é opcional. Quando setado via SetCoupons, in.CouponCode é
 	// validado e o desconto aplicado em AmountCents antes do Quote.
 	coupons *CouponService
+	// referrals é opcional. Quando setado, hook de signup grava o referral
+	// se tracking traz referrer_code.
+	referrals *ReferralService
+	// fraud é opcional. Quando setado, IsBlocked(email|ip) é checado antes
+	// de qualquer trabalho — pedidos suspeitos rejeitados como Forbidden.
+	fraud *FraudService
 }
 
 // SetMetricCapture liga o capture pós-criação. Chamado uma vez no
@@ -75,6 +81,17 @@ func NewCheckoutService(
 // em todos os testes que ainda não usam cupom.
 func (s *CheckoutService) SetCoupons(svc *CouponService) {
 	s.coupons = svc
+}
+
+// SetReferrals opt-in pra hook de signup (RecordReferral quando user é
+// criado e tracking traz referrer_code).
+func (s *CheckoutService) SetReferrals(svc *ReferralService) {
+	s.referrals = svc
+}
+
+// SetFraud opt-in pra check pré-checkout (block por IsBlocked).
+func (s *CheckoutService) SetFraud(svc *FraudService) {
+	s.fraud = svc
 }
 
 type CheckoutInput struct {
@@ -150,6 +167,22 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		return nil, domain.ErrInvalidInput
 	}
 
+	// Fraud check pré-tudo. Email/IP em blocklist → 403 fast-fail (não toca
+	// no plano nem cria order pending). IP deduzido da tracking (handler já
+	// enriqueceu); fallback string vazia que IsBlocked trata como no-op.
+	if s.fraud != nil {
+		if blocked, _ := s.fraud.IsBlocked(ctx, in.Email); blocked {
+			return nil, domain.ErrForbidden
+		}
+		if ipRaw, ok := in.Tracking["ip"]; ok {
+			if ip, _ := ipRaw.(string); ip != "" {
+				if blocked, _ := s.fraud.IsBlocked(ctx, ip); blocked {
+					return nil, domain.ErrForbidden
+				}
+			}
+		}
+	}
+
 	plan, err := s.plans.GetByID(ctx, in.PlanID)
 	if err != nil {
 		return nil, err
@@ -219,6 +252,13 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 			return nil, err
 		}
 		accountCreated = true
+		// Referral signup hook. Idempotente — RecordReferral só seta se ainda
+		// não tem referred_by. Falhas são best-effort (não derrubam checkout).
+		if s.referrals != nil {
+			if rc, ok := in.Tracking["referrer_code"].(string); ok && rc != "" {
+				_ = s.referrals.RecordReferral(ctx, userID, rc)
+			}
+		}
 	}
 	if in.UserID != "" && in.UserID != userID {
 		// se o token de usuário diz outra coisa, força o user do token (segurança)

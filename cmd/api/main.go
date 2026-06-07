@@ -91,6 +91,10 @@ func main() {
 	countryPPPRepo := postgres.NewCountryPPPRepo(db)
 	referralRepo := postgres.NewReferralRepo(db)
 	abRepo := postgres.NewABTestRepo(db)
+	subscriptionRepo := postgres.NewSubscriptionRepo(db)
+	taxRateRepo := postgres.NewTaxRateRepo(db)
+	vendorRepo := postgres.NewVendorRepo(db)
+	apiKeyRepo := postgres.NewAPIKeyRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -132,6 +136,25 @@ func main() {
 	refundSvc := application.NewRefundService(db, creditSvc)
 	fraudCron := application.NewFraudVelocityCron(db)
 	fraudCron.Start(context.Background())
+
+	// Wave 2 hooks parciais (CheckoutService): plug Referral + Fraud.
+	// PaymentReceiver e UserAuthService.SetReferrals são feitos depois, após
+	// suas construções.
+	checkoutSvc.SetReferrals(referralSvc)
+	checkoutSvc.SetFraud(fraudSvc)
+
+	// Wave 3 services
+	subscriptionSvc := application.NewSubscriptionService(subscriptionRepo, checkoutSvc)
+	subscriptionSvc.SetUsers(userRepo)
+	subscriptionSvc.SetPlans(planRepo)
+	subscriptionSvc.SetProfiles(profileRepo)
+	subscriptionCron := application.NewSubscriptionCron(subscriptionSvc)
+	subscriptionCron.Start(context.Background())
+	taxSvc := application.NewTaxService(taxRateRepo)
+	waSender := application.NewDryRunWhatsAppSender()
+	waSvc := application.NewWhatsAppService(db, waSender)
+	vendorSvc := application.NewVendorService(vendorRepo)
+	apiKeySvc := application.NewAPIKeyService(apiKeyRepo)
 	gwSvc := application.NewGatewayService(gwRepo)
 	// JWT RS256 — carrega ou gera RSA privada. Tokens novos signam RS256;
 	// ValidateAdmin/ValidateUser ainda aceitam HS256 antigos por compat (7d).
@@ -141,6 +164,11 @@ func main() {
 	}
 	authSvc := application.NewAuthService(adminRepo, roleRepo, rsaKey, []byte(cfg.JWTSecret), cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, rsaKey, []byte(cfg.JWTSecret), cfg.JWTTTL)
+	// HS256 kill-switch (Fase 4.1 follow-up). Após janela de 7d, operador
+	// seta LEGACY_HS256_DISABLED=true e tokens HS256 antigos param de ser
+	// aceitos pelo ValidateAdmin/ValidateUser.
+	authSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
+	userAuthSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
 	ticketSvc := application.NewTicketService(ticketRepo, userRepo, emailSender, cfg.SiteURL)
 	notifier := notify.NewWebhookClient(cfg.AdminWebhookURL)
 	if !notifier.Enabled() {
@@ -150,6 +178,10 @@ func main() {
 		invoiceRepo, orderRepo, planRepo, userRepo,
 		ticketSvc, invoiceSvc, emailSender, notifier, cfg.SiteURL,
 	)
+	// Wave 2 hooks restantes (Referral payout no PaymentReceiver + Referral
+	// signup no UserAuthService.Register).
+	paymentReceiver.SetReferrals(referralSvc)
+	userAuthSvc.SetReferrals(referralSvc)
 
 	auditRepo := postgres.NewAuditRepo(db)
 	auditSvc := application.NewAuditService(auditRepo)
@@ -238,6 +270,12 @@ func main() {
 		ABTests:         abSvc,
 		Fraud:           fraudSvc,
 		Refunds:         refundSvc,
+		Subscriptions:   subscriptionSvc,
+		TaxRates:        taxRateRepo,
+		Tax:             taxSvc,
+		WhatsApp:        waSvc,
+		Vendors:         vendorSvc,
+		APIKeys:         apiKeySvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

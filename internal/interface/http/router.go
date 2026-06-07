@@ -78,6 +78,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/referrals/{code}/info", h.PublicReferralInfo)
 		r.With(mutationLimiter).Post("/ab/assign", h.PublicABAssign)
 		r.With(mutationLimiter).Post("/ab/track", h.PublicABTrack)
+		r.Get("/tax-rates", h.PublicTaxRates)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(mutationLimiter, idem, optionalUserAuth).Post("/checkout", h.CreateCheckout)
@@ -106,6 +107,17 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Get("/orders", h.MeOrders)
 			r.Get("/orders/{id}", h.MeGetOrder)
 			r.Get("/referral", h.MeGetMyReferral)
+
+			r.Get("/subscriptions", h.MeListMySubscriptions)
+			r.Post("/subscriptions", h.MeSubscribe)
+			r.Delete("/subscriptions/{id}", h.MeCancelSubscription)
+
+			r.Get("/whatsapp", h.MeGetWhatsAppPref)
+			r.Put("/whatsapp", h.MeUpdateWhatsApp)
+
+			r.Get("/api-keys", h.MeListAPIKeys)
+			r.Post("/api-keys", h.MeCreateAPIKey)
+			r.Delete("/api-keys/{id}", h.MeRevokeAPIKey)
 
 			r.Get("/notif-prefs", h.MeGetNotifPrefs)
 			r.Put("/notif-prefs", h.MeUpdateNotifPrefs)
@@ -192,12 +204,25 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/refund", h.AdminIssueRefund)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders/{id}/refunds", h.AdminListOrderRefunds)
 
+			// Vendors (multi-vendor scaffold).
+			r.With(RequirePermission(domain.PermAdminsManage)).Get("/vendors", h.AdminListVendors)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/vendors", h.AdminCreateVendor)
+			r.With(RequirePermission(domain.PermAdminsManage)).Put("/vendors/{id}", h.AdminUpdateVendor)
+
 			// Usuários, ajuste de saldo e marcação manual de pedido.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users", h.AdminListUsers)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users/{id}", h.AdminGetUser)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 		})
+	})
+
+	// API B2B v2 — autenticada via X-API-Key header. Read-only por enquanto;
+	// rate-limit per-key e billing per-call ficam para v2.5.
+	r.Route("/v2", func(r chi.Router) {
+		r.Use(apiKeyAuth(h.APIKeys))
+		r.Get("/plans", h.PublicV2Plans)
+		r.Get("/orders/{id}/status", h.PublicV2OrderStatus)
 	})
 
 	return r

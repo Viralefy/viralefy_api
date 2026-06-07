@@ -24,8 +24,18 @@ type AuthService struct {
 	roles             domain.RoleRepository
 	RSAPrivKey        *rsa.PrivateKey
 	LegacyHS256Secret []byte
-	kid               string
-	ttl               time.Duration
+	// legacyHS256Disabled — kill-switch (Fase 4.1 follow-up). Quando true,
+	// tokens HS256 são recusados mesmo com LegacyHS256Secret presente.
+	// Setado via SetLegacyHS256Disabled após a janela de migração.
+	legacyHS256Disabled bool
+	kid                 string
+	ttl                 time.Duration
+}
+
+// SetLegacyHS256Disabled hard-disable HS256 sem reset do secret (permite
+// auditoria/rotate posterior do binário).
+func (s *AuthService) SetLegacyHS256Disabled(disabled bool) {
+	s.legacyHS256Disabled = disabled
 }
 
 func NewAuthService(admins domain.AdminRepository, roles domain.RoleRepository, rsaKey *rsa.PrivateKey, legacyHS256Secret []byte, ttl time.Duration) *AuthService {
@@ -133,7 +143,7 @@ func (s *AuthService) parseDualSign(tokenStr string) (jwt.MapClaims, error) {
 			}
 			return &s.RSAPrivKey.PublicKey, nil
 		case *jwt.SigningMethodHMAC:
-			if len(s.LegacyHS256Secret) == 0 {
+			if s.legacyHS256Disabled || len(s.LegacyHS256Secret) == 0 {
 				return nil, domain.ErrUnauthorized
 			}
 			return s.LegacyHS256Secret, nil

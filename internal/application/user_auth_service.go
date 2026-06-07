@@ -17,8 +17,25 @@ type UserAuthService struct {
 	users             domain.UserRepository
 	RSAPrivKey        *rsa.PrivateKey
 	LegacyHS256Secret []byte
-	kid               string
-	ttl               time.Duration
+	// legacyHS256Disabled — kill-switch (Fase 4.1 follow-up). Espelha o
+	// comportamento do AuthService de admin: bloqueia HS256 mesmo com
+	// secret presente, pra cutover seguro sem reiniciar com env zerada.
+	legacyHS256Disabled bool
+	kid                 string
+	ttl                 time.Duration
+	// referrals opcional. Quando setado, Register chama RecordReferral se
+	// tracking[referrer_code] estiver presente. Best-effort.
+	referrals *ReferralService
+}
+
+// SetReferrals opt-in.
+func (s *UserAuthService) SetReferrals(svc *ReferralService) {
+	s.referrals = svc
+}
+
+// SetLegacyHS256Disabled — ver AuthService.SetLegacyHS256Disabled.
+func (s *UserAuthService) SetLegacyHS256Disabled(disabled bool) {
+	s.legacyHS256Disabled = disabled
 }
 
 func NewUserAuthService(users domain.UserRepository, rsaKey *rsa.PrivateKey, legacyHS256Secret []byte, ttl time.Duration) *UserAuthService {
@@ -76,6 +93,12 @@ func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*User
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
+	// Referral signup hook — espelha CheckoutService.
+	if s.referrals != nil {
+		if rc, ok := in.Tracking["referrer_code"].(string); ok && rc != "" {
+			_ = s.referrals.RecordReferral(ctx, u.ID, rc)
+		}
+	}
 	return s.session(u)
 }
 
@@ -123,7 +146,7 @@ func (s *UserAuthService) ValidateToken(tokenStr string) (userID string, err err
 			}
 			return &s.RSAPrivKey.PublicKey, nil
 		case *jwt.SigningMethodHMAC:
-			if len(s.LegacyHS256Secret) == 0 {
+			if s.legacyHS256Disabled || len(s.LegacyHS256Secret) == 0 {
 				return nil, domain.ErrUnauthorized
 			}
 			return s.LegacyHS256Secret, nil

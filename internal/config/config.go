@@ -27,11 +27,12 @@ type Config struct {
 	SMTPFrom            string
 	SMTPFromName        string
 
-	EmailProvider  string
-	ResendAPIKey   string
-	ResendFrom     string
-	ResendFromName string
-	ResendBaseURL  string
+	EmailProvider       string
+	ResendAPIKey        string
+	ResendFrom          string
+	ResendFromName      string
+	ResendBaseURL       string
+	ResendWebhookSecret string
 
 	SiteURL string // URL pública da loja (https://viralefy.com) — usada em e-mails
 
@@ -67,11 +68,12 @@ func Load() (Config, error) {
 		SMTPFrom:            getenv("SMTP_FROM", "no-reply@viralefy.local"),
 		SMTPFromName:        getenv("SMTP_FROM_NAME", "Viralefy"),
 
-		EmailProvider:  getenv("EMAIL_PROVIDER", ""),
-		ResendAPIKey:   getenv("RESEND_API_KEY", ""),
-		ResendFrom:     getenv("RESEND_FROM", "onboarding@resend.dev"),
-		ResendFromName: getenv("RESEND_FROM_NAME", "Viralefy"),
-		ResendBaseURL:  getenv("RESEND_BASE_URL", "https://api.resend.com"),
+		EmailProvider:       getenv("EMAIL_PROVIDER", ""),
+		ResendAPIKey:        getenv("RESEND_API_KEY", ""),
+		ResendFrom:          getenv("RESEND_FROM", "onboarding@resend.dev"),
+		ResendFromName:      getenv("RESEND_FROM_NAME", "Viralefy"),
+		ResendBaseURL:       getenv("RESEND_BASE_URL", "https://api.resend.com"),
+		ResendWebhookSecret: getenv("RESEND_WEBHOOK_SECRET", ""),
 
 		SiteURL: getenv("SITE_URL", getenv("NEXT_PUBLIC_SITE_URL", "https://viralefy.com")),
 

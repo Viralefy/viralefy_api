@@ -45,6 +45,13 @@ type PaymentReceiver struct {
 	email      EmailSender
 	notifier   AdminNotifier
 	siteURL    string
+	referrals  *ReferralService
+}
+
+// SetReferrals opt-in pra payout hook (GrantOnFirstPaidOrder após order
+// vira paid). Best-effort: erro no payout não impede transição de status.
+func (r *PaymentReceiver) SetReferrals(svc *ReferralService) {
+	r.referrals = svc
 }
 
 func NewPaymentReceiver(
@@ -112,10 +119,26 @@ func (r *PaymentReceiver) ConfirmByExternalRef(ctx context.Context, ref string) 
 		// Refresh + handoff (email, ticket, admin notify) — não bloqueia.
 		if refreshed, err := r.orders.GetByID(ctx, ord.ID); err == nil && refreshed != nil {
 			r.onOrderPaid(ctx, refreshed)
+			r.referralPayout(ctx, refreshed)
 		}
 		return "order", nil
 	}
 	return "", nil
+}
+
+// referralPayout dispara GrantOnFirstPaidOrder se houver ReferralService.
+// Best-effort com log warn — erros não derrubam a transição já confirmada.
+func (r *PaymentReceiver) referralPayout(ctx context.Context, ord *domain.Order) {
+	if r.referrals == nil || ord == nil {
+		return
+	}
+	if err := r.referrals.GrantOnFirstPaidOrder(ctx, ord); err != nil {
+		observability.FromContext(ctx).Warn("referral payout failed",
+			"component", "payment_receiver",
+			"order_id", ord.ID,
+			"error", err.Error(),
+		)
+	}
 }
 
 // MarkOrderPaid força a marcação direta (uso do admin via backoffice quando
@@ -133,6 +156,7 @@ func (r *PaymentReceiver) MarkOrderPaid(ctx context.Context, orderID string) err
 	}
 	if refreshed, err := r.orders.GetByID(ctx, ord.ID); err == nil && refreshed != nil {
 		r.onOrderPaid(ctx, refreshed)
+		r.referralPayout(ctx, refreshed)
 	}
 	return nil
 }

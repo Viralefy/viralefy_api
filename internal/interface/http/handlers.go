@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
@@ -48,10 +50,16 @@ type Handlers struct {
 	Notifs     *application.UserNotifService
 	UserData   *application.UserDataService
 	CountryPPP domain.CountryPPPRepository
-	Referrals  *application.ReferralService
-	ABTests    *application.ABTestService
-	Fraud      *application.FraudService
-	Refunds    *application.RefundService
+	Referrals     *application.ReferralService
+	ABTests       *application.ABTestService
+	Fraud         *application.FraudService
+	Refunds       *application.RefundService
+	Subscriptions *application.SubscriptionService
+	TaxRates      domain.TaxRateRepository
+	Tax           *application.TaxService
+	WhatsApp      *application.WhatsAppService
+	Vendors       *application.VendorService
+	APIKeys       *application.APIKeyService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1276,6 +1284,19 @@ func (h *Handlers) ResendWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+	// Svix signature check (Fase 4.4 follow-up). Lemos o secret direto do
+	// env pra evitar engordar a struct Handlers — endpoint singleton, custo
+	// desprezível por request. Vazio = skip (HML/dev).
+	if secret := os.Getenv("RESEND_WEBHOOK_SECRET"); secret != "" {
+		svixID := r.Header.Get("svix-id")
+		svixTS := r.Header.Get("svix-timestamp")
+		svixSig := r.Header.Get("svix-signature")
+		if err := email.VerifySvixSignature(body, svixID, svixTS, svixSig, secret); err != nil {
+			logger.Warn("svix signature invalid", "error", err.Error())
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+	}
 	if h.EmailRepu == nil {
 		// Service não wireado — só registramos e seguimos.
 		w.WriteHeader(http.StatusOK)
@@ -1884,4 +1905,104 @@ func (h *Handlers) AdminListFraudSignals(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeData(w, http.StatusOK, list)
+}
+
+// PublicTaxRates devolve o catálogo de alíquotas fiscais (Fase 5.3 — VAT
+// UE+GB). Front baixa uma vez por sessão e pre-computa a linha de VAT no
+// checkout antes do submit. A autoridade do cálculo final é o
+// TaxService.ComputeTax server-side; este endpoint serve só pra display.
+//
+// Tabela pequena (<40 linhas) → sem paginação. Países ausentes equivalem
+// a rate 0% e o front trata. Cache-Control fica como o resto dos catálogos
+// públicos (CDN/edge caching definido fora daqui).
+func (h *Handlers) PublicTaxRates(w http.ResponseWriter, r *http.Request) {
+	if h.TaxRates == nil {
+		writeData(w, http.StatusOK, []domain.TaxRate{})
+		return
+	}
+	list, err := h.TaxRates.List(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+// --- Subscriptions (Fase 6.3) ---
+//
+// Subscriptions são planos mensais recorrentes. O cron de renovação
+// (SubscriptionCron) gera uma order pending a cada ciclo via
+// CheckoutService.Checkout, e o user paga via payment_url normal.
+// 3 falhas seguidas → cancela auto.
+
+// MeListMySubscriptions devolve subs do user autenticado (active +
+// cancelled), ordenadas por created_at DESC.
+func (h *Handlers) MeListMySubscriptions(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Subscriptions == nil {
+		writeData(w, http.StatusOK, []domain.Subscription{})
+		return
+	}
+	subs, err := h.Subscriptions.ListByUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, subs)
+}
+
+// MeSubscribe cria sub ativa. Body: {plan_id}. Idempotente (já existir
+// active → devolve a mesma). NÃO gera o primeiro pagamento; o user
+// continua precisando fazer um checkout manual pro ciclo 0.
+func (h *Handlers) MeSubscribe(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Subscriptions == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var body struct {
+		PlanID string `json:"plan_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	sub, err := h.Subscriptions.Subscribe(r.Context(), userID, body.PlanID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusCreated, sub)
+}
+
+// MeCancelSubscription cancela a sub do user (valida ownership no
+// service). DELETE em /v1/me/subscriptions/{id}.
+func (h *Handlers) MeCancelSubscription(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Subscriptions == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Subscriptions.Cancel(r.Context(), id, userID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
