@@ -13,6 +13,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/config"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/notify"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
@@ -88,6 +89,8 @@ func main() {
 	currencyRepo := postgres.NewCurrencyRepo(db)
 	couponRepo := postgres.NewCouponRepo(db)
 	countryPPPRepo := postgres.NewCountryPPPRepo(db)
+	referralRepo := postgres.NewReferralRepo(db)
+	abRepo := postgres.NewABTestRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -123,9 +126,21 @@ func main() {
 	orderSvc := application.NewOrderService(orderRepo, planRepo)
 	userNotifSvc := application.NewUserNotifService(db)
 	userDataSvc := application.NewUserDataService(db)
+	referralSvc := application.NewReferralService(referralRepo, userRepo, creditSvc)
+	abSvc := application.NewABTestService(abRepo)
+	fraudSvc := application.NewFraudService(db)
+	refundSvc := application.NewRefundService(db, creditSvc)
+	fraudCron := application.NewFraudVelocityCron(db)
+	fraudCron.Start(context.Background())
 	gwSvc := application.NewGatewayService(gwRepo)
-	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
-	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
+	// JWT RS256 — carrega ou gera RSA privada. Tokens novos signam RS256;
+	// ValidateAdmin/ValidateUser ainda aceitam HS256 antigos por compat (7d).
+	rsaKey, err := jwtkeys.LoadOrGenerate(cfg.JWTPrivateKeyPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	authSvc := application.NewAuthService(adminRepo, roleRepo, rsaKey, []byte(cfg.JWTSecret), cfg.JWTTTL)
+	userAuthSvc := application.NewUserAuthService(userRepo, rsaKey, []byte(cfg.JWTSecret), cfg.JWTTTL)
 	ticketSvc := application.NewTicketService(ticketRepo, userRepo, emailSender, cfg.SiteURL)
 	notifier := notify.NewWebhookClient(cfg.AdminWebhookURL)
 	if !notifier.Enabled() {
@@ -219,6 +234,10 @@ func main() {
 		Notifs:          userNotifSvc,
 		UserData:        userDataSvc,
 		CountryPPP:      countryPPPRepo,
+		Referrals:       referralSvc,
+		ABTests:         abSvc,
+		Fraud:           fraudSvc,
+		Refunds:         refundSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

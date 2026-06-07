@@ -8,17 +8,24 @@ import (
 )
 
 type Config struct {
-	Port         string
-	BindHost     string
-	DatabaseURL  string
-	JWTSecret    string
-	JWTTTL       time.Duration
-	CORSOrigins  []string
-	SMTPAddr     string
-	SMTPUser     string
-	SMTPPass     string
-	SMTPFrom     string
-	SMTPFromName string
+	Port        string
+	BindHost    string
+	DatabaseURL string
+	JWTSecret   string
+	JWTTTL      time.Duration
+	// JWTPrivateKeyPath é o caminho da chave RSA privada usada pra
+	// assinar tokens RS256 (Fase 4.1). Se o arquivo não existir, é
+	// gerado on-demand pelo jwtkeys.LoadOrGenerate.
+	JWTPrivateKeyPath string
+	// LegacyHS256Disabled — quando true, o validador para de aceitar
+	// tokens HS256 legados. Setar após a janela de 7 dias.
+	LegacyHS256Disabled bool
+	CORSOrigins         []string
+	SMTPAddr            string
+	SMTPUser            string
+	SMTPPass            string
+	SMTPFrom            string
+	SMTPFromName        string
 
 	EmailProvider  string
 	ResendAPIKey   string
@@ -46,17 +53,19 @@ func Load() (Config, error) {
 	ttlHours, _ := strconv.Atoi(getenv("JWT_TTL_HOURS", "24"))
 	cors := getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
 	cfg := Config{
-		Port:         port,
-		BindHost:     bindHost,
-		DatabaseURL:  db,
-		JWTSecret:    secret,
-		JWTTTL:       time.Duration(ttlHours) * time.Hour,
-		CORSOrigins:  splitCSV(cors),
-		SMTPAddr:     getenv("SMTP_ADDR", ""),
-		SMTPUser:     getenv("SMTP_USER", ""),
-		SMTPPass:     getenv("SMTP_PASS", ""),
-		SMTPFrom:     getenv("SMTP_FROM", "no-reply@viralefy.local"),
-		SMTPFromName: getenv("SMTP_FROM_NAME", "Viralefy"),
+		Port:                port,
+		BindHost:            bindHost,
+		DatabaseURL:         db,
+		JWTSecret:           secret,
+		JWTTTL:              time.Duration(ttlHours) * time.Hour,
+		JWTPrivateKeyPath:   getenv("JWT_PRIVATE_KEY_PATH", "/etc/viralefy/jwt-rs256.pem"),
+		LegacyHS256Disabled: getenv("LEGACY_HS256_DISABLED", "") == "true",
+		CORSOrigins:         splitCSV(cors),
+		SMTPAddr:            getenv("SMTP_ADDR", ""),
+		SMTPUser:            getenv("SMTP_USER", ""),
+		SMTPPass:            getenv("SMTP_PASS", ""),
+		SMTPFrom:            getenv("SMTP_FROM", "no-reply@viralefy.local"),
+		SMTPFromName:        getenv("SMTP_FROM_NAME", "Viralefy"),
 
 		EmailProvider:  getenv("EMAIL_PROVIDER", ""),
 		ResendAPIKey:   getenv("RESEND_API_KEY", ""),

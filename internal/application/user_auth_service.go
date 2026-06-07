@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"crypto/rsa"
 	"strings"
 	"time"
 
@@ -11,14 +12,23 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// UserAuthService — mesma estratégia dual-sign do AuthService (Fase 4.1).
 type UserAuthService struct {
-	users  domain.UserRepository
-	secret []byte
-	ttl    time.Duration
+	users             domain.UserRepository
+	RSAPrivKey        *rsa.PrivateKey
+	LegacyHS256Secret []byte
+	kid               string
+	ttl               time.Duration
 }
 
-func NewUserAuthService(users domain.UserRepository, secret string, ttl time.Duration) *UserAuthService {
-	return &UserAuthService{users: users, secret: []byte(secret), ttl: ttl}
+func NewUserAuthService(users domain.UserRepository, rsaKey *rsa.PrivateKey, legacyHS256Secret []byte, ttl time.Duration) *UserAuthService {
+	return &UserAuthService{
+		users:             users,
+		RSAPrivKey:        rsaKey,
+		LegacyHS256Secret: legacyHS256Secret,
+		kid:               deriveKID(rsaKey),
+		ttl:               ttl,
+	}
 }
 
 type RegisterInput struct {
@@ -89,7 +99,11 @@ func (s *UserAuthService) session(u domain.User) (*UserSession, error) {
 		"exp":  exp.Unix(),
 		"iat":  time.Now().UTC().Unix(),
 	}
-	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.secret)
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	if s.kid != "" {
+		tok.Header["kid"] = s.kid
+	}
+	signed, err := tok.SignedString(s.RSAPrivKey)
 	if err != nil {
 		return nil, err
 	}
@@ -101,13 +115,23 @@ func (s *UserAuthService) session(u domain.User) (*UserSession, error) {
 }
 
 func (s *UserAuthService) ValidateToken(tokenStr string) (userID string, err error) {
-	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-		if t.Method != jwt.SigningMethodHS256 {
+	t, perr := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		switch t.Method.(type) {
+		case *jwt.SigningMethodRSA:
+			if s.RSAPrivKey == nil {
+				return nil, domain.ErrUnauthorized
+			}
+			return &s.RSAPrivKey.PublicKey, nil
+		case *jwt.SigningMethodHMAC:
+			if len(s.LegacyHS256Secret) == 0 {
+				return nil, domain.ErrUnauthorized
+			}
+			return s.LegacyHS256Secret, nil
+		default:
 			return nil, domain.ErrUnauthorized
 		}
-		return s.secret, nil
 	})
-	if err != nil || !t.Valid {
+	if perr != nil || !t.Valid {
 		return "", domain.ErrUnauthorized
 	}
 	claims, ok := t.Claims.(jwt.MapClaims)

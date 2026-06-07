@@ -50,6 +50,8 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 	r.Get("/health", Health)
 	r.Method(http.MethodGet, "/ready", ReadyHandler(ready))
 	r.Method(http.MethodGet, "/metrics", observability.MetricsHandler())
+	// JWKS pública (RS256) — fora de /v1 pra ser descobrível como RFC 8615.
+	r.Get("/.well-known/jwks.json", h.PublicJWKS)
 
 	// Middlewares de segurança aplicados a mutations sensíveis (checkout
 	// e recovery): idempotência por header Idempotency-Key e rate-limit
@@ -73,6 +75,9 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/status", h.PublicStatus)
 		r.Get("/country-ppp", h.PublicCountryPPP)
 		r.With(mutationLimiter).Post("/coupons/validate", h.PublicValidateCoupon)
+		r.Get("/referrals/{code}/info", h.PublicReferralInfo)
+		r.With(mutationLimiter).Post("/ab/assign", h.PublicABAssign)
+		r.With(mutationLimiter).Post("/ab/track", h.PublicABTrack)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(mutationLimiter, idem, optionalUserAuth).Post("/checkout", h.CreateCheckout)
@@ -100,6 +105,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Use(userAuth)
 			r.Get("/orders", h.MeOrders)
 			r.Get("/orders/{id}", h.MeGetOrder)
+			r.Get("/referral", h.MeGetMyReferral)
 
 			r.Get("/notif-prefs", h.MeGetNotifPrefs)
 			r.Put("/notif-prefs", h.MeUpdateNotifPrefs)
@@ -177,6 +183,14 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermCouponsRead)).Get("/coupons", h.AdminListCoupons)
 			r.With(RequirePermission(domain.PermCouponsWrite)).Post("/coupons", h.AdminCreateCoupon)
 			r.With(RequirePermission(domain.PermCouponsWrite)).Put("/coupons/{code}", h.AdminUpdateCoupon)
+
+			// Anti-fraude + A/B testing + refunds.
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/fraud/signals", h.AdminListFraudSignals)
+			r.With(RequirePermission(domain.PermAdminsManage)).Get("/ab/experiments", h.AdminListAB)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/ab/experiments", h.AdminCreateAB)
+			r.With(RequirePermission(domain.PermAdminsManage)).Put("/ab/experiments/{key}", h.AdminUpdateAB)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/refund", h.AdminIssueRefund)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders/{id}/refunds", h.AdminListOrderRefunds)
 
 			// Usuários, ajuste de saldo e marcação manual de pedido.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users", h.AdminListUsers)

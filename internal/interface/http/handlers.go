@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/viralefy/viralefy_api/internal/application"
 	"github.com/viralefy/viralefy_api/internal/domain"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
@@ -47,6 +48,10 @@ type Handlers struct {
 	Notifs     *application.UserNotifService
 	UserData   *application.UserDataService
 	CountryPPP domain.CountryPPPRepository
+	Referrals  *application.ReferralService
+	ABTests    *application.ABTestService
+	Fraud      *application.FraudService
+	Refunds    *application.RefundService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -117,18 +122,18 @@ func (h *Handlers) ListCurrencies(w http.ResponseWriter, r *http.Request) {
 // no PaymentReceiver). Pré-pagamento, fica só a order pending.
 func (h *Handlers) CreateRecoveryRequest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Handle              string `json:"handle"`                 // @handle alvo
-		Platform            string `json:"platform"`               // instagram | tiktok
-		BanDate             string `json:"ban_date"`               // ISO 8601 ou texto livre
-		EstimatedReason     string `json:"estimated_reason"`       // suspeita do usuário
-		LastPublicationURL  string `json:"last_publication_url"`   // último post visível
-		Description         string `json:"description"`            // contexto extra
-		ContactEmail        string         `json:"contact_email"`
-		ContactName         string         `json:"contact_name"`
-		DisplayCurrency     string         `json:"display_currency"`
-		PaymentMethod       string         `json:"payment_method,omitempty"`
-		TurnstileToken      string         `json:"turnstile_token"`
-		Tracking            map[string]any `json:"tracking,omitempty"`
+		Handle             string         `json:"handle"`               // @handle alvo
+		Platform           string         `json:"platform"`             // instagram | tiktok
+		BanDate            string         `json:"ban_date"`             // ISO 8601 ou texto livre
+		EstimatedReason    string         `json:"estimated_reason"`     // suspeita do usuário
+		LastPublicationURL string         `json:"last_publication_url"` // último post visível
+		Description        string         `json:"description"`          // contexto extra
+		ContactEmail       string         `json:"contact_email"`
+		ContactName        string         `json:"contact_name"`
+		DisplayCurrency    string         `json:"display_currency"`
+		PaymentMethod      string         `json:"payment_method,omitempty"`
+		TurnstileToken     string         `json:"turnstile_token"`
+		Tracking           map[string]any `json:"tracking,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -886,12 +891,12 @@ func (h *Handlers) AdminMetricsSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeData(w, http.StatusOK, map[string]any{
-		"orders_total":  len(orders),
-		"orders_paid":   totalPaid,
-		"revenue_usd":   formatFloat(totalRevenue, 2),
-		"status_count":  statusCount,
+		"orders_total":   len(orders),
+		"orders_paid":    totalPaid,
+		"revenue_usd":    formatFloat(totalRevenue, 2),
+		"status_count":   statusCount,
 		"top_categories": cats,
-		"daily_30d":     series,
+		"daily_30d":      series,
 	})
 }
 
@@ -1288,9 +1293,9 @@ func (h *Handlers) ResendWebhook(w http.ResponseWriter, r *http.Request) {
 // Front chama isso pra mostrar "$X off com BLACK10" antes do submit.
 func (h *Handlers) PublicValidateCoupon(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Code           string `json:"code"`
-		PlanID         string `json:"plan_id"`
-		Email          string `json:"email"`
+		Code            string `json:"code"`
+		PlanID          string `json:"plan_id"`
+		Email           string `json:"email"`
 		DisplayCurrency string `json:"display_currency"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1653,4 +1658,230 @@ func (h *Handlers) MeCancelDeletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// PublicJWKS expõe a chave pública RSA (Fase 4.1) em
+// /.well-known/jwks.json — consumidores externos (verificadores
+// stateless) podem validar tokens RS256 sem chamar a API. Lê a chave
+// privada que já vive dentro do AuthService pra evitar carregar
+// /etc/viralefy/jwt-rs256.pem duas vezes.
+func (h *Handlers) PublicJWKS(w http.ResponseWriter, r *http.Request) {
+	if h.Auth == nil || h.Auth.RSAPrivKey == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	jwks, err := jwtkeys.PublicJWKS(h.Auth.RSAPrivKey)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	// Cache curto (5 min) — clientes podem cachear mais tempo via Cache-Control
+	// quando rotação for implementada com janela de overlap.
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	writeJSON(w, http.StatusOK, jwks)
+}
+
+// --- A/B testing harness (Fase 6.6) --- //
+//
+// Endpoints públicos:
+//   POST /v1/ab/assign — devolve variant pra um (visitor_id, experiment_key).
+//   POST /v1/ab/track  — registra evento ("exposure"|"conversion"|custom).
+//
+// Admin (RBAC: admins:manage):
+//   GET  /v1/admin/ab/experiments
+//   POST /v1/admin/ab/experiments
+//   PUT  /v1/admin/ab/experiments/{key}
+//
+// Visitor ID vem do front (UUID em cookie/localStorage 1y). Sticky
+// assignment garante reprodutibilidade entre dispositivos do mesmo visitor.
+
+// PublicABAssign — atribui (ou recupera) a variant do visitor.
+// Body: { visitor_id, experiment_key }
+// Resp: { variant }
+//
+// Quando o experimento está inativo, devolve { variant: "control" } como
+// fallback seguro — o front renderiza a variant default sem quebrar.
+// Quando o experimento não existe, devolve 404.
+func (h *Handlers) PublicABAssign(w http.ResponseWriter, r *http.Request) {
+	if h.ABTests == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var body struct {
+		VisitorID     string `json:"visitor_id"`
+		ExperimentKey string `json:"experiment_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	variant, err := h.ABTests.GetAssignment(r.Context(), body.VisitorID, body.ExperimentKey)
+	if err != nil {
+		// Inativo → fallback graceful pra "control" sem 4xx.
+		if err == domain.ErrExperimentInactive {
+			writeData(w, http.StatusOK, map[string]string{"variant": "control"})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]string{"variant": variant})
+}
+
+// PublicABTrack — registra um evento.
+// Body: { visitor_id, experiment_key, event_name, payload? }
+func (h *Handlers) PublicABTrack(w http.ResponseWriter, r *http.Request) {
+	if h.ABTests == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var body struct {
+		VisitorID     string         `json:"visitor_id"`
+		ExperimentKey string         `json:"experiment_key"`
+		EventName     string         `json:"event_name"`
+		Payload       map[string]any `json:"payload,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.ABTests.TrackEvent(r.Context(), body.VisitorID, body.ExperimentKey, body.EventName, body.Payload); err != nil {
+		// Inativo: silenciar (204) — evento não conta mas não é erro pro
+		// cliente. Outros erros propagam.
+		if err == domain.ErrExperimentInactive {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminListAB — lista todos os experimentos pro backoffice.
+func (h *Handlers) AdminListAB(w http.ResponseWriter, r *http.Request) {
+	if h.ABTests == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	list, err := h.ABTests.AdminListExperiments(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+// AdminCreateAB — cria experimento.
+// Body: { key, description, variants: {variant: weight}, active }
+func (h *Handlers) AdminCreateAB(w http.ResponseWriter, r *http.Request) {
+	if h.ABTests == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var e domain.ABExperiment
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	out, err := h.ABTests.AdminCreateExperiment(r.Context(), e)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	h.logAudit(r, "create", "ab_experiment", out.Key, nil, out)
+	writeData(w, http.StatusCreated, out)
+}
+
+// AdminUpdateAB — atualiza descrição, pesos e flag active. Key imutável.
+func (h *Handlers) AdminUpdateAB(w http.ResponseWriter, r *http.Request) {
+	if h.ABTests == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	key := chi.URLParam(r, "key")
+	var e domain.ABExperiment
+	if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	e.Key = key
+	out, err := h.ABTests.AdminUpdateExperiment(r.Context(), e)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	h.logAudit(r, "update", "ab_experiment", key, nil, out)
+	writeData(w, http.StatusOK, out)
+}
+
+// --- Referrals (Fase 6.4) --- //
+
+// MeGetMyReferral devolve {code, total_referred, total_earned_cents}
+// para o painel /account/referral. EnsureCode roda on-demand: usuários
+// que nunca acessaram a aba ainda assim ganham código aqui.
+func (h *Handlers) MeGetMyReferral(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.Referrals == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	stats, err := h.Referrals.MyStats(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, stats)
+}
+
+// PublicReferralInfo é o endpoint anônimo consumido pelo checkout pra
+// renderizar o selo "Convidado por X" (primeiro nome apenas). Resposta
+// sempre 200 — quando o código não existe, devolve {valid:false} pro
+// front degradar silenciosamente sem 404 ruidoso no console.
+func (h *Handlers) PublicReferralInfo(w http.ResponseWriter, r *http.Request) {
+	if h.Referrals == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	code := chi.URLParam(r, "code")
+	info, err := h.Referrals.PublicInfo(r.Context(), code)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, info)
+}
+
+// --- Anti-fraude (Fase 4.3) --- //
+
+// AdminListFraudSignals devolve a timeline de sinais gravados pelo
+// FraudVelocityCron + checagens inline. Filtros opcionais por actor
+// (email/IP substring) e severity (warn|block). Limite default 100.
+func (h *Handlers) AdminListFraudSignals(w http.ResponseWriter, r *http.Request) {
+	if h.Fraud == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	actor := strings.TrimSpace(r.URL.Query().Get("actor"))
+	severity := strings.TrimSpace(r.URL.Query().Get("severity"))
+	if severity != "" && severity != "warn" && severity != "block" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	limit := 0
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			limit = n
+		}
+	}
+	list, err := h.Fraud.ListSignals(r.Context(), actor, severity, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
 }
