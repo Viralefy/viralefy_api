@@ -25,6 +25,9 @@ type CheckoutService struct {
 	// Create dispara um snapshot best-effort em goroutine separada —
 	// usado como segunda fonte de verdade ao verificar entrega do gateway.
 	metrics *MetricCaptureService
+	// coupons é opcional. Quando setado via SetCoupons, in.CouponCode é
+	// validado e o desconto aplicado em AmountCents antes do Quote.
+	coupons *CouponService
 }
 
 // SetMetricCapture liga o capture pós-criação. Chamado uma vez no
@@ -68,6 +71,12 @@ func NewCheckoutService(
 	}
 }
 
+// SetCoupons injeta o CouponService — opt-in pra não exigir o construtor
+// em todos os testes que ainda não usam cupom.
+func (s *CheckoutService) SetCoupons(svc *CouponService) {
+	s.coupons = svc
+}
+
 type CheckoutInput struct {
 	PlanID          string
 	Email           string
@@ -88,6 +97,11 @@ type CheckoutInput struct {
 	// Pagamento:
 	PaymentMethod string // "gateway" (default) ou "credits". credits exige usuário logado com saldo
 	UserID        string // setado pelo handler quando usuário está logado; obrigatório p/ credits
+	// CouponCode opcional. Validado contra CouponService (vide SetCoupons);
+	// erro nas regras → ErrInvalidInput (front mostra mensagem). Cupom
+	// inexistente ou inelegível: rejeita o checkout inteiro pra evitar
+	// surpresa de "comprou achando que tinha desconto".
+	CouponCode string
 }
 
 // NewProfileInline permite o usuário criar um perfil "no ato" do checkout
@@ -117,6 +131,11 @@ type CheckoutResult struct {
 	PaymentMethod      string             `json:"payment_method"` // gateway | credits
 	CreditsUsedCents   int                `json:"credits_used_cents,omitempty"`
 	CreditBalanceCents int64              `json:"credit_balance_cents,omitempty"`
+	// Quando cupom aplicado: preço original, desconto e final em USD-cents
+	// (informativo pro front mostrar "$X off com BLACK10").
+	CouponCode         string             `json:"coupon_code,omitempty"`
+	OriginalUSDCents   int                `json:"original_usd_cents,omitempty"`
+	DiscountUSDCents   int                `json:"discount_usd_cents,omitempty"`
 }
 
 func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*CheckoutResult, error) {
@@ -146,7 +165,29 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		return nil, err
 	}
 
-	quote, err := s.currencies.QuoteForPlan(ctx, plan.Prices, plan.PriceCents, in.DisplayCurrency)
+	// Cupom (opcional). Valida + calcula desconto ANTES do Quote pra que
+	// o display/settlement amount já reflitam o valor final cobrado.
+	amountCents := plan.PriceCents
+	var couponDiscountUSDCents int
+	var couponCodeApplied string
+	if in.CouponCode != "" && s.coupons != nil {
+		preview, err := s.coupons.Preview(ctx, PreviewInput{
+			Code:           in.CouponCode,
+			AmountUSDCents: plan.PriceCents,
+			PlanCategory:   plan.Category,
+			UserEmail:      in.Email,
+		})
+		if err != nil {
+			// Erro do cupom é InvalidInput pro cliente; mensagem específica
+			// vai pelo error path do writeError (handler lê o erro).
+			return nil, domain.ErrInvalidInput
+		}
+		amountCents = preview.FinalUSDCents
+		couponDiscountUSDCents = preview.DiscountUSDCents
+		couponCodeApplied = preview.Code
+	}
+
+	quote, err := s.currencies.QuoteForPlan(ctx, plan.Prices, amountCents, in.DisplayCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +251,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		UserID:             userID,
 		PlanID:             plan.ID,
 		Status:             domain.OrderStatusPending,
-		AmountCents:        plan.PriceCents,
+		AmountCents:        amountCents, // já descontado se cupom aplicou
 		Currency:           plan.Currency,
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
@@ -234,18 +275,19 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		if err != nil {
 			return nil, err
 		}
-		if acct.BalanceCents < int64(plan.PriceCents) {
+		if acct.BalanceCents < int64(amountCents) {
 			return nil, domain.ErrInvalidInput // saldo insuficiente — front trata
 		}
 		// Pedido já entra como pago (não há cobrança externa).
 		order.Status = domain.OrderStatusPaid
-		order.CreditsUsedCents = plan.PriceCents
+		order.CreditsUsedCents = amountCents
 		if err := s.orders.Create(ctx, order); err != nil {
 			return nil, err
 		}
+		s.redeemCoupon(ctx, couponCodeApplied, orderID, in.Email, couponDiscountUSDCents)
 		s.fireBaselineCapture(orderID)
 		// Debita do ledger (atômico no repo).
-		newAcct, err := s.credits.Spend(ctx, userID, int64(plan.PriceCents), "Pedido "+plan.Name, &orderID)
+		newAcct, err := s.credits.Spend(ctx, userID, int64(amountCents), "Pedido "+plan.Name, &orderID)
 		if err != nil {
 			return nil, err
 		}
@@ -256,8 +298,9 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 			DisplayCurrency: quote.DisplayCurrency, DisplaySymbol: quote.DisplaySymbol, DisplayAmount: quote.DisplayAmount,
 			SettlementCurrency: quote.SettlementCurrency, SettlementSymbol: quote.SettlementSymbol, SettlementAmount: quote.SettlementAmount,
 			AccountCreated: accountCreated, Email: in.Email, EmailSent: emailSent,
-			PaymentMethod: "credits", CreditsUsedCents: plan.PriceCents,
+			PaymentMethod: "credits", CreditsUsedCents: amountCents,
 			CreditBalanceCents: newAcct.BalanceCents,
+			CouponCode: couponCodeApplied, OriginalUSDCents: plan.PriceCents, DiscountUSDCents: couponDiscountUSDCents,
 		}, nil
 	}
 
@@ -269,6 +312,7 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, err
 	}
+	s.redeemCoupon(ctx, couponCodeApplied, orderID, in.Email, couponDiscountUSDCents)
 	s.fireBaselineCapture(orderID)
 
 	provider := ""
@@ -306,8 +350,26 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 		SettlementCurrency: quote.SettlementCurrency, SettlementSymbol: quote.SettlementSymbol, SettlementAmount: quote.SettlementAmount,
 		AccountCreated: accountCreated, Email: in.Email, EmailSent: emailSent,
 		GatewayProvider: provider, PaymentURL: paymentURL, PaymentExtra: paymentExtra,
-		PaymentMethod: "gateway",
+		PaymentMethod:   "gateway",
+		CouponCode:      couponCodeApplied,
+		OriginalUSDCents: plan.PriceCents,
+		DiscountUSDCents: couponDiscountUSDCents,
 	}, nil
+}
+
+// redeemCoupon registra o uso após o order ser criado. Best-effort: erros
+// não derrubam o checkout (o ticket já foi cobrado e gravado). Drift
+// eventual aparece no audit log se houver problema.
+func (s *CheckoutService) redeemCoupon(ctx context.Context, code, orderID, email string, discountUSDCents int) {
+	if code == "" || s.coupons == nil || discountUSDCents <= 0 {
+		return
+	}
+	if err := s.coupons.Redeem(ctx, RedeemInput{
+		Code: code, OrderID: orderID, UserEmail: email, DiscountUSDCents: discountUSDCents,
+	}); err != nil {
+		observability.FromContext(ctx).Warn("coupon redeem failed (order ok)",
+			"order_id", orderID, "coupon", code, "error", err.Error())
+	}
 }
 
 // resolveTarget valida que o alvo informado bate com plan.target_type e

@@ -71,6 +71,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/categories/{code}/reviews", h.PublicReviewsForCategory)
 		r.Get("/currencies", h.ListCurrencies)
 		r.Get("/status", h.PublicStatus)
+		r.With(mutationLimiter).Post("/coupons/validate", h.PublicValidateCoupon)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
 		r.With(mutationLimiter, idem, optionalUserAuth).Post("/checkout", h.CreateCheckout)
@@ -162,6 +163,11 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			// Reviews (moderação).
 			r.With(RequirePermission(domain.PermReviewsRead)).Get("/reviews", h.AdminListReviews)
 			r.With(RequirePermission(domain.PermReviewsModerate)).Patch("/reviews/{id}", h.AdminPatchReviewVisibility)
+
+			// Coupons.
+			r.With(RequirePermission(domain.PermCouponsRead)).Get("/coupons", h.AdminListCoupons)
+			r.With(RequirePermission(domain.PermCouponsWrite)).Post("/coupons", h.AdminCreateCoupon)
+			r.With(RequirePermission(domain.PermCouponsWrite)).Put("/coupons/{code}", h.AdminUpdateCoupon)
 
 			// Usuários, ajuste de saldo e marcação manual de pedido.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users", h.AdminListUsers)

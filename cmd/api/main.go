@@ -86,6 +86,7 @@ func main() {
 	roleRepo := postgres.NewRoleRepo(db)
 	categoryRepo := postgres.NewCategoryRepo(db)
 	currencyRepo := postgres.NewCurrencyRepo(db)
+	couponRepo := postgres.NewCouponRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -116,6 +117,8 @@ func main() {
 	profileSvc := application.NewProfileService(profileRepo)
 	invoiceSvc := application.NewInvoiceService(invoiceRepo, gwRepo, userRepo, creditSvc, currencySvc, payments)
 	checkoutSvc := application.NewCheckoutService(userRepo, planRepo, orderRepo, gwRepo, profileRepo, currencySvc, creditSvc, emailSender, payments, cfg.SiteURL)
+	couponSvc := application.NewCouponService(couponRepo)
+	checkoutSvc.SetCoupons(couponSvc)
 	gwSvc := application.NewGatewayService(gwRepo)
 	authSvc := application.NewAuthService(adminRepo, roleRepo, cfg.JWTSecret, cfg.JWTTTL)
 	userAuthSvc := application.NewUserAuthService(userRepo, cfg.JWTSecret, cfg.JWTTTL)
@@ -202,6 +205,7 @@ func main() {
 		Metrics:         metricCaptureSvc,
 		Reviews:         reviewSvc,
 		EmailRepu:       emailRepuSvc,
+		Coupons:         couponSvc,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

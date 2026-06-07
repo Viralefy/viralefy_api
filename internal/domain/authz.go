@@ -16,6 +16,8 @@ const (
 	PermReviewsRead     = "reviews:read"
 	PermReviewsModerate = "reviews:moderate"
 	PermAdminsManage    = "admins:manage"
+	PermCouponsRead     = "coupons:read"
+	PermCouponsWrite    = "coupons:write"
 )
 
 // RoleSuperadmin tem acesso total (bypass de permissão).

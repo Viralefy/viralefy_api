@@ -42,6 +42,7 @@ type Handlers struct {
 	Metrics    *application.MetricCaptureService
 	Reviews    *application.ReviewService
 	EmailRepu  *application.EmailReputationService
+	Coupons    *application.CouponService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1277,6 +1278,89 @@ func (h *Handlers) ResendWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// PublicValidateCoupon — preview do desconto sem comprometer used_count.
+// Front chama isso pra mostrar "$X off com BLACK10" antes do submit.
+func (h *Handlers) PublicValidateCoupon(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Code           string `json:"code"`
+		PlanID         string `json:"plan_id"`
+		Email          string `json:"email"`
+		DisplayCurrency string `json:"display_currency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if h.Coupons == nil || h.Plans == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	plan, err := h.Plans.GetByID(r.Context(), body.PlanID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	preview, err := h.Coupons.Preview(r.Context(), application.PreviewInput{
+		Code:           body.Code,
+		AmountUSDCents: plan.PriceCents,
+		PlanCategory:   plan.Category,
+		UserEmail:      body.Email,
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, preview)
+}
+
+// Admin CRUD ----
+
+func (h *Handlers) AdminListCoupons(w http.ResponseWriter, r *http.Request) {
+	if h.Coupons == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	list, err := h.Coupons.List(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}
+
+func (h *Handlers) AdminCreateCoupon(w http.ResponseWriter, r *http.Request) {
+	var c domain.Coupon
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	out, err := h.Coupons.Create(r.Context(), c)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	h.logAudit(r, "create", "coupon", out.Code, nil, out)
+	writeData(w, http.StatusCreated, out)
+}
+
+func (h *Handlers) AdminUpdateCoupon(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+	var c domain.Coupon
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	c.Code = code
+	before, _ := h.Coupons.Get(r.Context(), code)
+	out, err := h.Coupons.Update(r.Context(), c)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	h.logAudit(r, "update", "coupon", code, before, out)
+	writeData(w, http.StatusOK, out)
 }
 
 func Health(w http.ResponseWriter, _ *http.Request) {
