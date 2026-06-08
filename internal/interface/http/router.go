@@ -94,6 +94,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		// Webhooks dos providers (sem auth — assinatura é validada no handler).
 		r.Post("/webhooks/woovi", h.WooviWebhook)
 		r.Post("/webhooks/heleket", h.HeleketWebhook)
+		r.Post("/webhooks/stripe", h.StripeWebhook)
 		r.Post("/webhooks/resend", h.ResendWebhook)
 
 		// Auth admin (backoffice)

@@ -2,6 +2,9 @@ package payment
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -165,4 +168,114 @@ func truncateStripe(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// VerifyStripeWebhook valida a assinatura `Stripe-Signature` (HMAC SHA256
+// do `timestamp.payload` usando o webhook secret). Tolera tolerance de 5min
+// pra desvio de relógio. Aceita múltiplos v1=... no header (Stripe rotação).
+//
+// Header format:  t=1234567890,v1=hex,v1=hex,v0=...
+//
+// Algoritmo: signed_payload = timestamp + "." + payload_bytes
+//            expected      = hmac_sha256(secret, signed_payload)
+//            match qualquer um dos v1= no header com expected (constant-time)
+func VerifyStripeWebhook(body []byte, signatureHeader, secret string) error {
+	if secret == "" {
+		return fmt.Errorf("stripe webhook: missing secret")
+	}
+	if signatureHeader == "" {
+		return fmt.Errorf("stripe webhook: missing Stripe-Signature header")
+	}
+	var ts string
+	v1s := []string{}
+	for _, part := range strings.Split(signatureHeader, ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "t":
+			ts = kv[1]
+		case "v1":
+			v1s = append(v1s, kv[1])
+		}
+	}
+	if ts == "" || len(v1s) == 0 {
+		return fmt.Errorf("stripe webhook: malformed Stripe-Signature header")
+	}
+	tsInt, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return fmt.Errorf("stripe webhook: invalid timestamp")
+	}
+	if abs64(time.Now().Unix()-tsInt) > 5*60 {
+		return fmt.Errorf("stripe webhook: timestamp outside tolerance")
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts))
+	mac.Write([]byte("."))
+	mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	expectedBytes := []byte(expected)
+	for _, sig := range v1s {
+		if hmac.Equal([]byte(sig), expectedBytes) {
+			return nil
+		}
+	}
+	return fmt.Errorf("stripe webhook: signature mismatch")
+}
+
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// StripeEvent — shape mínimo do JSON do webhook Stripe que precisamos.
+// Stripe envia uma estrutura grande; só nos importa identificar o tipo
+// e o session_id / order_id quando é checkout.session.completed.
+type StripeEvent struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Data struct {
+		Object struct {
+			ID                string            `json:"id"`
+			ClientReferenceID string            `json:"client_reference_id"`
+			Metadata          map[string]string `json:"metadata"`
+			PaymentStatus     string            `json:"payment_status"`
+		} `json:"object"`
+	} `json:"data"`
+}
+
+func (e StripeEvent) IsPaid() bool {
+	// checkout.session.completed sinaliza intent + payment_intent succeeded.
+	// payment_intent.succeeded também serve mas chega em rotas paralelas;
+	// pra evitar double-fire confiamos no completed (idempotência fica no
+	// PaymentReceiver via order.status guard).
+	if e.Type != "checkout.session.completed" {
+		return false
+	}
+	return e.Data.Object.PaymentStatus == "paid" || e.Data.Object.PaymentStatus == ""
+}
+
+// OrderID resolve o id do pedido a partir do event. Priorizamos
+// client_reference_id (setado pelo CreateCharge); fallback metadata.order_id.
+func (e StripeEvent) OrderID() string {
+	if id := strings.TrimSpace(e.Data.Object.ClientReferenceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(e.Data.Object.Metadata["order_id"])
+}
+
+// ParseStripeEvent decodifica o JSON do webhook. Retorna ErrInvalidInput
+// se não é JSON válido ou estrutura mínima.
+func ParseStripeEvent(body []byte) (StripeEvent, error) {
+	var ev StripeEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return ev, fmt.Errorf("stripe webhook: parse: %w", err)
+	}
+	if ev.Type == "" {
+		return ev, fmt.Errorf("stripe webhook: missing type")
+	}
+	return ev, nil
 }

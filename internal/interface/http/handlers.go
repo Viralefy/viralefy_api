@@ -61,6 +61,11 @@ type Handlers struct {
 	Vendors       *application.VendorService
 	APIKeys       *application.APIKeyService
 	Events        *application.UserEventService
+	// Email sender — usado por handlers que precisam disparar transactional
+	// email fora do fluxo de PaymentReceiver (ex.: AdminProofDecision quando
+	// admin rejeita o comprovante e o cliente precisa ser avisado pra
+	// reanexar).
+	Email application.EmailSender
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1213,6 +1218,64 @@ func (h *Handlers) WooviWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// StripeWebhook recebe eventos da Stripe (https://stripe.com/docs/webhooks).
+// Signature em `Stripe-Signature` (HMAC SHA256 do `timestamp.payload` com
+// o webhook secret — vide payment.VerifyStripeWebhook). Em
+// checkout.session.completed dispara MarkOrderPaid pelo client_reference_id
+// (que setamos como order_id no CreateCharge). PaymentReceiver é idempotente
+// — Stripe re-entrega em caso de 5xx; segundo fire é no-op.
+func (h *Handlers) StripeWebhook(w http.ResponseWriter, r *http.Request) {
+	logger := observability.FromContext(r.Context()).With("provider", "stripe")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "bad_request").Inc()
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	gw, err := h.Gateways.GetActiveByProvider(r.Context(), "stripe")
+	if err != nil || gw == nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "no_gateway").Inc()
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	if err := payment.VerifyStripeWebhook(body, r.Header.Get("Stripe-Signature"), gw.Config["webhook_secret"]); err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "invalid_signature").Inc()
+		logger.Warn("webhook signature invalid", "error", err.Error())
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	ev, err := payment.ParseStripeEvent(body)
+	if err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "parse_error").Inc()
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if !ev.IsPaid() {
+		// Ignora eventos que não sinalizam pagamento confirmado (charge.failed,
+		// payment_intent.created etc). Stripe espera 2xx mesmo assim — senão
+		// continua reentregando.
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "ignored").Inc()
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	orderID := ev.OrderID()
+	if orderID == "" {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "no_order_id").Inc()
+		logger.Warn("stripe event missing order id", "event_id", ev.ID, "type", ev.Type)
+		// 200 mesmo assim — o defeito é nosso ou de config; Stripe não pode
+		// resolver com retry. Já caiu na métrica pra alarme.
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := h.PaymentReceiver.MarkOrderPaid(r.Context(), orderID); err != nil {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "confirm_failed").Inc()
+		logger.Error("MarkOrderPaid failed", "order_id", orderID, "error", err.Error())
+	} else {
+		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "confirmed").Inc()
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *Handlers) HeleketWebhook(w http.ResponseWriter, r *http.Request) {
 	logger := observability.FromContext(r.Context()).With("provider", "heleket")
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -2280,9 +2343,46 @@ func (h *Handlers) AdminProofDecision(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+	} else if h.Email != nil {
+		// Rejected: cliente precisa saber que precisa reanexar. PaymentReceiver
+		// NÃO é chamado, então o email fica conosco aqui. Best-effort: erro
+		// no envio loga e segue (decisão de admin já foi gravada).
+		if user, err := h.Users.GetByID(r.Context(), o.UserID); err == nil && user != nil {
+			_ = h.Email.Send(r.Context(), buildProofRejectionEmail(user.Name, user.Email, id, body.Note))
+		}
 	}
 	updated, _ := h.Orders.GetByID(r.Context(), id)
 	writeData(w, http.StatusOK, updated)
+}
+
+// buildProofRejectionEmail compõe a mensagem enviada ao cliente quando
+// admin rejeita o comprovante. Texto curto, focado na ação: "anexa de
+// novo". Reason é opcional — admin pode deixar vazio.
+func buildProofRejectionEmail(name, to, orderID, reason string) application.EmailMessage {
+	short := orderID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	reasonBlock := ""
+	if strings.TrimSpace(reason) != "" {
+		reasonBlock = "<p><strong>Reviewer note:</strong> " + reason + "</p>"
+	}
+	html := "<p>Hi " + name + ",</p>" +
+		"<p>We couldn&rsquo;t verify the payment proof you uploaded for order <strong>#" + short + "</strong>.</p>" +
+		reasonBlock +
+		"<p>Please open the order in your account and re-upload a clearer screenshot or the transaction hash. We&rsquo;ll activate the order as soon as we can confirm the deposit.</p>" +
+		"<p>— Viralefy</p>"
+	text := "Hi " + name + ",\n\nWe couldn't verify the payment proof you uploaded for order #" + short + ".\n"
+	if reason != "" {
+		text += "Reviewer note: " + reason + "\n"
+	}
+	text += "\nPlease re-upload a clearer screenshot or your transaction hash from your account.\n\n— Viralefy"
+	return application.EmailMessage{
+		To:       to,
+		Subject:  "Payment proof needs another look — Order #" + short,
+		HTMLBody: html,
+		TextBody: text,
+	}
 }
 
 // AdminListPendingProofs — GET /v1/admin/proofs/pending

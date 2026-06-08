@@ -284,6 +284,7 @@ func main() {
 		Vendors:         vendorSvc,
 		APIKeys:         apiKeySvc,
 		Events:          userEventSvc,
+		Email:           emailSender,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).
