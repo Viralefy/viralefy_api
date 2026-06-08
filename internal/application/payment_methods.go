@@ -75,6 +75,9 @@ func (s *CheckoutService) ListPaymentMethods(
 		if !g.Active {
 			continue
 		}
+		if !gatewayEligible(g, quote.DisplayCurrency, quote.SettlementCurrency, country) {
+			continue
+		}
 		opt, ok := s.buildMethodOption(ctx, g, plan, quote)
 		if !ok {
 			continue
@@ -82,6 +85,33 @@ func (s *CheckoutService) ListPaymentMethods(
 		out = append(out, opt)
 	}
 	return out, nil
+}
+
+// gatewayEligible decide se um gateway deve aparecer pro cliente. Regra:
+//   - Gateway aceita display_currency OU settlement_currency → mostra
+//   - PIX (BRL) só aparece se o cliente está em BRL OU country=br (mesmo
+//     que o display seja outro — ex.: brasileiro vendo preço em USD)
+//   - "Universal" providers (Stripe/heleket) ficam visíveis sempre que a
+//     settlement currency bater
+//
+// Sem isso, o catálogo retornava TUDO e o cliente alemão via "Pay R$X
+// via PIX" — útil pra ninguém, confuso pra todos.
+func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrency, country string) bool {
+	display := strings.ToUpper(strings.TrimSpace(displayCurrency))
+	settle := strings.ToUpper(strings.TrimSpace(settlementCurrency))
+	country = strings.ToLower(strings.TrimSpace(country))
+	for _, raw := range g.AcceptedCurrencies {
+		c := strings.ToUpper(strings.TrimSpace(raw))
+		if c == display || c == settle {
+			return true
+		}
+		// PIX/BRL: brasileiro navegando em USD/EUR ainda deve ver PIX.
+		// Outros tipos de gateway BRL-only seguem a mesma regra.
+		if c == "BRL" && country == "br" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildMethodOption monta uma PaymentMethodOption pra um gateway específico.
