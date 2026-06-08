@@ -119,6 +119,8 @@ func main() {
 		payment.NewHeleket(),
 		payment.NewManualPIX(),
 		payment.NewManualUSDT(),
+		payment.NewManualCrypto(),
+		payment.NewStripe(cfg.SiteURL),
 	)
 
 	planSvc := application.NewPlanService(planRepo)

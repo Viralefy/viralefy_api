@@ -64,6 +64,13 @@ type Order struct {
 	// `Status` virou `paid` em categorias que abrem ticket (recovery,
 	// BMs, perfis).
 	TicketID           *string           `json:"ticket_id,omitempty"`
+	// Proof of payment (migration 034). Cliente anexa comprovante após
+	// depositar manualmente (PIX, crypto on-chain). Admin revisa em
+	// backoffice e marca pago. ProofStatus: pending | approved | rejected.
+	ProofURL           *string           `json:"proof_url,omitempty"`
+	ProofUploadedAt    *time.Time        `json:"proof_uploaded_at,omitempty"`
+	ProofStatus        *string           `json:"proof_status,omitempty"`
+	ProofNote          *string           `json:"proof_note,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 }
@@ -106,4 +113,12 @@ type OrderRepository interface {
 	// pra capar a rajada por iteração; cron roda em intervalo e pega o resto
 	// nos próximos ticks.
 	ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]Order, error)
+	// AssignGateway grava gateway_id num pedido pending. Usado pelo fluxo
+	// novo de checkout (pick-method) onde o gateway é escolhido APÓS a
+	// criação da order. Falha se o pedido já está paid/cancelled.
+	AssignGateway(ctx context.Context, orderID, gatewayID string) error
+	// SetProof persiste o comprovante anexado pelo cliente. status default
+	// "pending" (admin precisa revisar). url é opaco — pode ser data URL
+	// curto ou http url de storage; tamanho/validação no service.
+	SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error
 }

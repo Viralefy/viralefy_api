@@ -135,6 +135,12 @@ type CheckoutInput struct {
 	// /us/instagram-followers → TargetCountry="us". Operador usa pra
 	// escolher supplier correto (seguidor americano vs alemão).
 	TargetCountry string
+	// GatewayID opcional. Quando fornecido, força o uso desse gateway
+	// (escolhido pelo cliente no novo fluxo de seleção). Quando vazio,
+	// cai no pickGateway por settlement (back-compat com checkout antigo).
+	// Validamos que o gateway existe, está ativo e aceita a settlement
+	// currency derivada do plano + display_currency.
+	GatewayID string
 }
 
 // NewProfileInline permite o usuário criar um perfil "no ato" do checkout
@@ -375,7 +381,10 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	}
 
 	// ---------- Caminho B: pagamento via gateway (padrão) ----------
-	gw := s.pickGateway(ctx, quote.SettlementCurrency)
+	// Fluxo novo: cliente pode passar GatewayID escolhido na UI de seleção
+	// de métodos. Validamos que o gateway está ativo e aceita a settlement
+	// currency. Fallback: pickGateway por settlement (back-compat).
+	gw := s.resolveGateway(ctx, in.GatewayID, quote.SettlementCurrency)
 	if gw != nil {
 		order.GatewayID = &gw.ID
 	}
@@ -481,6 +490,31 @@ func (s *CheckoutService) resolveTarget(ctx context.Context, plan *domain.Plan, 
 		return "", strings.TrimSpace(in.PublicationURL), nil
 	}
 	return "", "", domain.ErrInvalidInput
+}
+
+// resolveGateway aplica a regra do fluxo novo: se o cliente escolheu um
+// gateway na UI de seleção, valida e usa esse; senão cai no pickGateway
+// (back-compat). Gateway inválido (desativado, inexistente, ou que não
+// aceita a settlement currency) → fallback silencioso pra pickGateway —
+// evitamos derrubar o checkout por gateway mal cadastrado; observabilidade
+// fica via logger no caminho B.
+func (s *CheckoutService) resolveGateway(ctx context.Context, gatewayID, settlement string) *domain.PaymentGateway {
+	if gatewayID == "" {
+		return s.pickGateway(ctx, settlement)
+	}
+	g, err := s.gateways.GetByID(ctx, gatewayID)
+	if err != nil || g == nil || !g.Active {
+		return s.pickGateway(ctx, settlement)
+	}
+	// Garantia: gateway aceita a moeda. Sem isso o customer escolheria
+	// "Stripe USD" pra um pedido em BRL e o charge quebraria.
+	want := strings.ToUpper(strings.TrimSpace(settlement))
+	for _, c := range g.AcceptedCurrencies {
+		if strings.ToUpper(c) == want {
+			return g
+		}
+	}
+	return s.pickGateway(ctx, settlement)
 }
 
 // pickGateway escolhe o gateway adequado para a moeda de liquidação.

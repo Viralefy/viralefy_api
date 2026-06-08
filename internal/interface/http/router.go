@@ -69,6 +69,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		// Público
 		r.Get("/plans", h.ListPublicPlans)
 		r.Get("/plans/{id}/reviews", h.PublicReviewsForPlan)
+		r.Get("/plans/{id}/payment-methods", h.PublicListPaymentMethods)
 		r.Get("/categories", h.ListCategories)
 		r.Get("/categories/{code}/reviews", h.PublicReviewsForCategory)
 		r.Get("/currencies", h.ListCurrencies)
@@ -107,6 +108,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Use(userAuth)
 			r.Get("/orders", h.MeOrders)
 			r.Get("/orders/{id}", h.MeGetOrder)
+			r.With(mutationLimiter, idem).Post("/orders/{id}/proof", h.MeUploadProof)
 			r.Get("/referral", h.MeGetMyReferral)
 			r.Get("/journey", h.MeJourney)
 

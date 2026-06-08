@@ -219,6 +219,7 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		CouponCode      string                        `json:"coupon_code,omitempty"`
 		Country         string                        `json:"country,omitempty"`        // país do COMPRADOR (VAT)
 		TargetCountry   string                        `json:"target_country,omitempty"` // mercado da entrega (LP)
+		GatewayID       string                        `json:"gateway_id,omitempty"`     // método escolhido na UI nova
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -238,6 +239,7 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		CouponCode:      body.CouponCode,
 		Country:         body.Country,
 		TargetCountry:   body.TargetCountry,
+		GatewayID:       body.GatewayID,
 	}
 	// Se houver token de usuário, força o userID do token (rota /v1/checkout é
 	// pública mas honra a autenticação opcional para credit/profile linkage).
@@ -2142,3 +2144,94 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+
+// PublicListPaymentMethods — GET /v1/plans/{id}/payment-methods
+// Catálogo de métodos de pagamento disponíveis para um plano específico,
+// com preview de quanto o cliente paga em CADA método (já convertido pra
+// moeda nativa do gateway). UI usa pra montar a lista de cards no checkout.
+//
+// Query params:
+//   display_currency — preferida do user (BRL/USD/EUR/USDT). Default USD.
+//   country          — código ISO alpha-2 minúsculo do comprador (futuro
+//                      filtro por região; hoje só passa por).
+func (h *Handlers) PublicListPaymentMethods(w http.ResponseWriter, r *http.Request) {
+	planID := chi.URLParam(r, "id")
+	if planID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	q := r.URL.Query()
+	methods, err := h.Checkout.ListPaymentMethods(
+		r.Context(), planID,
+		q.Get("display_currency"),
+		q.Get("country"),
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, methods)
+}
+
+// MeUploadProof — POST /v1/me/orders/{id}/proof
+// Cliente anexa comprovante de pagamento (PIX, crypto on-chain). O body é
+// JSON pra simplificar (sem multipart): {"file_url": "...", "file_name":
+// "...", "mime_type": "...", "size_bytes": ..., "note": "..."}.
+//
+// file_url aceita data: URLs (base64) curtos OU URLs http externas (cliente
+// hospedou em outro serviço — ex.: imgur). Limite de payload é o do
+// MaxBytesReader global (1MB) — telas de PIX/screenshots caem dentro.
+//
+// Sucesso: 200 com a Order atualizada (proof_status=pending). Admin revisa
+// em /backoffice/orders/{id} e clica "Approve" pra disparar mark-as-paid.
+func (h *Handlers) MeUploadProof(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	orderID := chi.URLParam(r, "id")
+	if orderID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	o, err := h.OrderSvc.GetByIDForUser(r.Context(), userID, orderID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if o.Status != domain.OrderStatusPending {
+		// Não aceita comprovante em paid/cancelled/failed — evita confusão
+		// sobre "anexei depois e mudou o estado".
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	var body struct {
+		FileURL   string `json:"file_url"`
+		FileName  string `json:"file_name,omitempty"`
+		MimeType  string `json:"mime_type,omitempty"`
+		SizeBytes int    `json:"size_bytes,omitempty"`
+		Note      string `json:"note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	body.FileURL = strings.TrimSpace(body.FileURL)
+	if body.FileURL == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Orders.SetProof(
+		r.Context(), orderID, body.FileURL, body.FileName, body.MimeType, body.Note, body.SizeBytes,
+	); err != nil {
+		writeError(w, err)
+		return
+	}
+	updated, err := h.OrderSvc.GetByIDForUser(r.Context(), userID, orderID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, updated)
+}

@@ -20,10 +20,12 @@ func NewGatewayService(repo domain.GatewayRepository) *GatewayService {
 // com o seletor do backoffice (gateways/page.tsx). Heleket/Woovi/ManualPIX
 // têm handlers de webhook específicos; qualquer outro provider seria órfão.
 var validProviders = map[string]bool{
-	"woovi":       true,
-	"heleket":     true,
-	"manual_pix":  true,
-	"manual_usdt": true,
+	"woovi":         true,
+	"heleket":       true,
+	"manual_pix":    true,
+	"manual_usdt":   true, // deprecated — usar manual_crypto + accepted_currencies=[USDT]
+	"manual_crypto": true, // genérico multi-network (USDT TRC20/BSC/POL, BTC, LTC, ...)
+	"stripe":        true, // cartões internacionais (Checkout Session API)
 }
 
 // validCurrency aceita qualquer ISO 4217 maiúsculo de 3 letras OU códigos
@@ -64,10 +66,12 @@ type CreateGatewayInput struct {
 // inteligentes em vez do default genérico da migration 032 que botava
 // USDT/USD em tudo, errado pra PIX).
 var providerDefaultCurrencies = map[string][]string{
-	"woovi":       {"BRL"},
-	"manual_pix":  {"BRL"},
-	"manual_usdt": {"USDT", "USD"},
-	"heleket":     {"USDT", "USD", "EUR", "BTC"},
+	"woovi":         {"BRL"},
+	"manual_pix":    {"BRL"},
+	"manual_usdt":   {"USDT"},
+	"manual_crypto": {"USDT"}, // override pra BTC/LTC/etc na criação do gateway
+	"heleket":       {"USDT", "USD", "EUR", "BTC"},
+	"stripe":        {"USD", "EUR", "BRL", "GBP"},
 }
 
 // validateGateway centraliza as regras de provider + accepted_currencies.
@@ -169,4 +173,33 @@ func (s *GatewayService) Update(ctx context.Context, in UpdateGatewayInput) (*do
 
 func (s *GatewayService) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, id)
+}
+
+// ListActiveAcceptingCurrency devolve todos os gateways ativos que aceitam
+// a moeda dada. Usado pelo novo fluxo de checkout pra montar a lista de
+// métodos disponíveis (cliente escolhe). Mantém ordem estável por nome
+// pra UI não embaralhar entre requests.
+func (s *GatewayService) ListActiveAcceptingCurrency(ctx context.Context, currency string) ([]domain.PaymentGateway, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	all, err := s.repo.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.PaymentGateway, 0, len(all))
+	for _, g := range all {
+		if !g.Active {
+			continue
+		}
+		if currency == "" {
+			out = append(out, g)
+			continue
+		}
+		for _, c := range g.AcceptedCurrencies {
+			if strings.ToUpper(c) == currency {
+				out = append(out, g)
+				break
+			}
+		}
+	}
+	return out, nil
 }

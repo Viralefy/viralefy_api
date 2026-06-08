@@ -23,6 +23,7 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	delivery_metrics, delivery_captured_at, delivery_source,
 	COALESCE(tax_country_code,''), COALESCE(tax_rate_pct,0), COALESCE(tax_usd_cents,0),
 	COALESCE(target_country_code,''),
+	proof_url, proof_uploaded_at, proof_status, proof_note,
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
@@ -113,6 +114,7 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.custom_data, o.ticket_id, o.tracking,
 	o.baseline_metrics, o.baseline_captured_at, o.baseline_source,
 	o.delivery_metrics, o.delivery_captured_at, o.delivery_source,
+	o.proof_url, o.proof_uploaded_at, o.proof_status, o.proof_note,
 	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, ''),
 	COALESCE(u.name, ''), COALESCE(u.email, '')`
@@ -211,6 +213,7 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		&delivery, &o.DeliveryCapturedAt, &o.DeliverySource,
 		&o.TaxCountryCode, &o.TaxRatePct, &o.TaxUSDCents,
 		&o.TargetCountryCode,
+		&o.ProofURL, &o.ProofUploadedAt, &o.ProofStatus, &o.ProofNote,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
@@ -249,6 +252,7 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 			&custom, &v.TicketID, &tracking,
 			&baseline, &v.BaselineCapturedAt, &v.BaselineSource,
 			&delivery, &v.DeliveryCapturedAt, &v.DeliverySource,
+			&v.ProofURL, &v.ProofUploadedAt, &v.ProofStatus, &v.ProofNote,
 			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory,
 			&v.UserName, &v.UserEmail)
@@ -340,4 +344,55 @@ func (r *OrderRepo) ListReadyForDeliveryCapture(ctx context.Context, olderThan t
 	}
 	defer rows.Close()
 	return scanOrders(rows)
+}
+
+// AssignGateway atribui um gateway a um pedido pending (fluxo novo de
+// checkout: cliente escolhe o método de pagamento APÓS criar o pedido).
+// Idempotente — pode trocar de gateway enquanto ainda pending. Bloqueia
+// se o pedido já saiu de pending (paid/cancelled).
+func (r *OrderRepo) AssignGateway(ctx context.Context, orderID, gatewayID string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders SET gateway_id=$2, updated_at=NOW()
+		 WHERE id=$1 AND status = 'pending'`, orderID, gatewayID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetProof grava o comprovante anexado. Append em order_proofs (histórico)
+// e atualiza denormalização em orders. proof_status default "pending" —
+// admin marca approved/rejected via backoffice. Idempotente: re-upload
+// sobrescreve denormalização e adiciona nova linha em order_proofs.
+func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error {
+	tx, err := r.db.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO order_proofs (id, order_id, file_url, file_name, mime_type, size_bytes, note)
+		VALUES (gen_random_uuid()::text, $1, $2, NULLIF($3,''), NULLIF($4,''), NULLIF($5,0), NULLIF($6,''))`,
+		orderID, fileURL, fileName, mime, sizeBytes, note); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE orders
+		   SET proof_url=$2,
+		       proof_uploaded_at=NOW(),
+		       proof_status=COALESCE(NULLIF(proof_status,'rejected'), 'pending'),
+		       proof_note=NULLIF($3,''),
+		       updated_at=NOW()
+		 WHERE id=$1 AND status='pending'`, orderID, fileURL, note)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return tx.Commit(ctx)
 }
