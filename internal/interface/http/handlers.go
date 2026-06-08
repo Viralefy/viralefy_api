@@ -2237,3 +2237,69 @@ func (h *Handlers) MeUploadProof(w http.ResponseWriter, r *http.Request) {
 	}
 	writeData(w, http.StatusOK, updated)
 }
+
+// AdminProofDecision — POST /v1/admin/orders/{id}/proof/decision
+// Admin revisa o comprovante anexado pelo cliente e marca approved ou
+// rejected. approved dispara mark-as-paid em sequência (fecha o loop
+// PIX/USDT manual: cliente paga → anexa → admin aprova → order ativada).
+// rejected mantém em pending com nota do reviewer; cliente reanexa.
+func (h *Handlers) AdminProofDecision(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Decision string `json:"decision"` // "approved" | "rejected"
+		Note     string `json:"note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	body.Decision = strings.ToLower(strings.TrimSpace(body.Decision))
+	if body.Decision != "approved" && body.Decision != "rejected" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	o, err := h.Orders.GetByID(r.Context(), id)
+	if err != nil || o == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	if o.ProofURL == nil || *o.ProofURL == "" {
+		// Sem comprovante anexado — admin clicou approve em order sem proof?
+		// Bloqueamos pra evitar mark-as-paid acidental por click errado.
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Orders.SetProofStatus(r.Context(), id, body.Decision, body.Note); err != nil {
+		writeError(w, err)
+		return
+	}
+	if body.Decision == "approved" {
+		// Dispara o pipeline normal pós-pagamento (ticket aberto, email,
+		// delivery capture). Idempotente — pode chamar 2x sem efeito duplo.
+		if err := h.PaymentReceiver.MarkOrderPaid(r.Context(), id); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	updated, _ := h.Orders.GetByID(r.Context(), id)
+	writeData(w, http.StatusOK, updated)
+}
+
+// AdminListPendingProofs — GET /v1/admin/proofs/pending
+// Fila de comprovantes aguardando revisão (mais antigos primeiro).
+// Backoffice usa pra atacar SLA: cliente fica pendurado esperando
+// aprovação manual; queremos saber quem está esperando mais.
+func (h *Handlers) AdminListPendingProofs(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	list, err := h.Orders.ListPendingProofs(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
+}

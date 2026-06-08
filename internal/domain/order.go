@@ -121,4 +121,13 @@ type OrderRepository interface {
 	// "pending" (admin precisa revisar). url é opaco — pode ser data URL
 	// curto ou http url de storage; tamanho/validação no service.
 	SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error
+	// SetProofStatus atualiza proof_status (approved | rejected) — usado
+	// pelo backoffice quando admin revisa o comprovante. Não dispara
+	// mark-as-paid: aprovação semântica só, side-effect é responsabilidade
+	// do PaymentReceiver chamado em sequência pelo handler.
+	SetProofStatus(ctx context.Context, orderID, status, reviewerNote string) error
+	// ListPendingProofs devolve pedidos com proof_status='pending' pra
+	// fila de revisão no backoffice. Ordena por proof_uploaded_at ASC
+	// (mais antigos primeiro — SLA tracker).
+	ListPendingProofs(ctx context.Context, limit int) ([]OrderView, error)
 }

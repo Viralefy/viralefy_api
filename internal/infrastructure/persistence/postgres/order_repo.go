@@ -396,3 +396,41 @@ func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mi
 	}
 	return tx.Commit(ctx)
 }
+
+// SetProofStatus muda proof_status pra approved|rejected. NÃO valida
+// o status — service deve garantir. proof_note acrescenta texto do
+// reviewer; quando vazio, mantém o que já estava (não sobrescreve).
+func (r *OrderRepo) SetProofStatus(ctx context.Context, orderID, status, reviewerNote string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders
+		   SET proof_status=$2,
+		       proof_note=COALESCE(NULLIF($3,''), proof_note),
+		       updated_at=NOW()
+		 WHERE id=$1`, orderID, status, reviewerNote)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// ListPendingProofs devolve a fila de comprovantes aguardando revisão.
+// Ordena por upload mais antigo primeiro pra admin atacar o SLA dos
+// clientes que estão esperando há mais tempo.
+func (r *OrderRepo) ListPendingProofs(ctx context.Context, limit int) ([]domain.OrderView, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.pool.Query(ctx, `SELECT `+orderViewCols+`
+		`+orderViewFrom+`
+		WHERE o.proof_status = 'pending'
+		ORDER BY o.proof_uploaded_at ASC NULLS LAST
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOrderViews(rows)
+}
