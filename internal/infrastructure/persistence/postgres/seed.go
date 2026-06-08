@@ -120,11 +120,35 @@ func seedCurrencies(ctx context.Context, db *DB) error {
 	}{
 		// USDT é a moeda padrão da storefront. Símbolo "$" porque é 1:1
 		// com USD e ficaria estranho mostrar "₮ 5,00" pro mundo todo.
+		//
+		// settlement_code aponta pra moeda em que a plataforma efetivamente
+		// liquida. Pra cripto auto (Heleket), TODAS settle em USDT por
+		// default — o processor converte na entrada.
+		// display_enabled=true expõe no picker do front; false esconde do
+		// picker mas mantém disponível como currency de cobrança no checkout
+		// (cliente nunca veria preço em LTC, mas pode optar por pagar com LTC).
 		{"USDT", "Tether", "$", "crypto", "USDT", 1.0, 2, 1, true},
 		{"USD", "Dólar", "$", "fiat", "USDT", 1.0, 2, 2, true},
 		{"EUR", "Euro", "€", "fiat", "EUR", 0.92, 2, 3, true},
 		{"BRL", "Real", "R$", "fiat", "BRL", 5.41, 2, 4, true},
-		{"BTC", "Bitcoin", "₿", "crypto", "BTC", 0.0000103, 8, 5, true},
+		{"GBP", "Libra", "£", "fiat", "GBP", 0.79, 2, 5, false},
+		// Cryptos — pay-in para gateways automáticos (Heleket) ou manual_crypto.
+		// settlement_code=USDT pra todas: plataforma sempre liquida em USDT.
+		// Rates aproximadas (USD-base, unidades da moeda por 1 USD); cron de
+		// drift atualiza periodicamente.
+		{"BTC", "Bitcoin", "₿", "crypto", "USDT", 0.0000103, 8, 10, true},
+		{"ETH", "Ethereum", "Ξ", "crypto", "USDT", 0.00028, 6, 11, false},
+		{"LTC", "Litecoin", "Ł", "crypto", "USDT", 0.0093, 6, 12, false},
+		{"BNB", "BNB", "BNB", "crypto", "USDT", 0.0014, 5, 13, false},
+		{"SOL", "Solana", "◎", "crypto", "USDT", 0.0050, 5, 14, false},
+		{"TRX", "Tron", "TRX", "crypto", "USDT", 4.05, 3, 15, false},
+		{"MATIC", "Polygon", "MATIC", "crypto", "USDT", 2.20, 3, 16, false},
+		{"XRP", "Ripple", "XRP", "crypto", "USDT", 1.65, 4, 17, false},
+		{"DOGE", "Dogecoin", "Ð", "crypto", "USDT", 4.85, 3, 18, false},
+		{"ADA", "Cardano", "ADA", "crypto", "USDT", 1.85, 3, 19, false},
+		// Stablecoins alternativas — útil pra gateways que aceitam USDC.
+		{"USDC", "USD Coin", "$", "crypto", "USDT", 1.0, 2, 20, false},
+		{"DAI", "Dai", "$", "crypto", "USDT", 1.0, 2, 21, false},
 	}
 	for _, c := range curs {
 		_, err := db.pool.Exec(ctx, `

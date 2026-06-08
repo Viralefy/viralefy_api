@@ -141,6 +141,13 @@ type CheckoutInput struct {
 	// Validamos que o gateway existe, está ativo e aceita a settlement
 	// currency derivada do plano + display_currency.
 	GatewayID string
+	// PayCurrency opcional — moeda em que o cliente quer EFETIVAMENTE
+	// pagar. Usado pra providers multi-currency (Heleket/Stripe) onde 1
+	// gateway expõe N opções (BTC/ETH/USDT/LTC). Quando presente E o
+	// gateway aceita, o charge é criado nessa moeda em vez do settlement
+	// canonical. Heleket converte pra USDT internamente; Stripe cria
+	// invoice na fiat escolhida.
+	PayCurrency string
 }
 
 // NewProfileInline permite o usuário criar um perfil "no ato" do checkout
@@ -399,12 +406,25 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	var paymentExtra map[string]string
 	if gw != nil {
 		provider = gw.Provider
+		// Pra providers multi-currency (Heleket/Stripe) o cliente escolheu
+		// uma moeda específica pra pagar. Calculamos o amount nessa moeda
+		// e usamos no charge — Heleket cria invoice em BTC, Stripe sessão em
+		// EUR, etc. Pra providers single-currency (PIX/manual_crypto) o
+		// payCurrency é ignorado.
+		chargeAmount := quote.SettlementAmount
+		chargeCurrency := quote.SettlementCurrency
+		if in.PayCurrency != "" && multiCurrencyProviders[strings.ToLower(strings.TrimSpace(gw.Provider))] {
+			if amount, code, ok := s.amountInCurrency(ctx, plan, in.PayCurrency); ok && gwAccepts(gw, code) {
+				chargeAmount = amount
+				chargeCurrency = code
+			}
+		}
 		if p, ok := s.payments.Get(gw.Provider); ok {
 			charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
 				OrderID:     orderID,
 				Description: plan.Name,
-				Amount:      quote.SettlementAmount,
-				Currency:    quote.SettlementCurrency,
+				Amount:      chargeAmount,
+				Currency:    chargeCurrency,
 				Customer:    PaymentCustomer{Name: in.Name, Email: in.Email},
 				Config:      gw.Config,
 			})

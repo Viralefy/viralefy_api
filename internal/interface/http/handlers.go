@@ -220,6 +220,7 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		Country         string                        `json:"country,omitempty"`        // país do COMPRADOR (VAT)
 		TargetCountry   string                        `json:"target_country,omitempty"` // mercado da entrega (LP)
 		GatewayID       string                        `json:"gateway_id,omitempty"`     // método escolhido na UI nova
+		PayCurrency     string                        `json:"pay_currency,omitempty"`   // pra Heleket/Stripe multi-currency
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -240,6 +241,7 @@ func (h *Handlers) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		Country:         body.Country,
 		TargetCountry:   body.TargetCountry,
 		GatewayID:       body.GatewayID,
+		PayCurrency:     body.PayCurrency,
 	}
 	// Se houver token de usuário, força o userID do token (rota /v1/checkout é
 	// pública mas honra a autenticação opcional para credit/profile linkage).

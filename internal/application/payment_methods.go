@@ -78,13 +78,22 @@ func (s *CheckoutService) ListPaymentMethods(
 		if !gatewayEligible(g, quote.DisplayCurrency, quote.SettlementCurrency, country) {
 			continue
 		}
-		opt, ok := s.buildMethodOption(ctx, g, plan, quote)
-		if !ok {
-			continue
-		}
-		out = append(out, opt)
+		out = append(out, s.buildMethodOptions(ctx, g, plan, quote)...)
 	}
 	return out, nil
+}
+
+// multiCurrencyProviders são providers onde 1 gateway = N opções de pay-in
+// (um card por accepted_currency). Heleket é um processor crypto que aceita
+// vários assets de entrada (BTC/ETH/USDT/LTC) e converte automático na
+// liquidação. Stripe pode rodar em múltiplas fiat (USD/EUR/BRL/GBP), cada
+// uma vira sua própria opção.
+//
+// Providers fora desta lista renderizam UM card por gateway (manual_pix,
+// manual_crypto — cada um já é uma rota única).
+var multiCurrencyProviders = map[string]bool{
+	"heleket": true,
+	"stripe":  true,
 }
 
 // cryptoProviders são os providers que efetivamente cobram em crypto
@@ -131,33 +140,84 @@ func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrenc
 	return false
 }
 
-// buildMethodOption monta uma PaymentMethodOption pra um gateway específico.
-// Retorna ok=false quando o gateway não tem moeda válida pra cobrar (gateway
-// mal cadastrado).
-func (s *CheckoutService) buildMethodOption(
+// buildMethodOptions expande um gateway em uma ou mais PaymentMethodOption.
+//
+// Providers em multiCurrencyProviders (Heleket, Stripe) emitem UM card por
+// accepted_currency — o cliente vê "Heleket — pay in BTC", "Heleket — pay in
+// USDT", "Heleket — pay in LTC" como opções distintas, cada uma com sua
+// conversão e sua moeda de "final settlement" (USDT na maioria).
+//
+// Providers single-currency (manual_pix, manual_crypto — cada um já é UMA
+// rota fixa de pagamento) emitem UM card por gateway.
+func (s *CheckoutService) buildMethodOptions(
 	ctx context.Context, g domain.PaymentGateway, plan *domain.Plan, quote Quote,
-) (PaymentMethodOption, bool) {
+) []PaymentMethodOption {
 	if len(g.AcceptedCurrencies) == 0 {
-		return PaymentMethodOption{}, false
+		return nil
 	}
-	chargedCurrency := pickChargedCurrency(g.AcceptedCurrencies, quote.SettlementCurrency)
+	provider := strings.ToLower(strings.TrimSpace(g.Provider))
+	if multiCurrencyProviders[provider] {
+		out := make([]PaymentMethodOption, 0, len(g.AcceptedCurrencies))
+		seen := map[string]bool{}
+		for _, raw := range g.AcceptedCurrencies {
+			code := strings.ToUpper(strings.TrimSpace(raw))
+			if code == "" || seen[code] {
+				continue
+			}
+			seen[code] = true
+			if opt, ok := s.buildSingleOption(ctx, g, plan, quote, code); ok {
+				out = append(out, opt)
+			}
+		}
+		return out
+	}
+	// Single-currency gateways usam a heurística antiga.
+	code := pickChargedCurrency(g.AcceptedCurrencies, quote.SettlementCurrency)
+	if opt, ok := s.buildSingleOption(ctx, g, plan, quote, code); ok {
+		return []PaymentMethodOption{opt}
+	}
+	return nil
+}
+
+// buildSingleOption emite UM PaymentMethodOption pra (gateway, chargedCurrency).
+// Centraliza a lógica de conversion_note + network warning (crypto).
+func (s *CheckoutService) buildSingleOption(
+	ctx context.Context, g domain.PaymentGateway, plan *domain.Plan, quote Quote, chargedCurrency string,
+) (PaymentMethodOption, bool) {
 	cur, err := s.currencies.repo.GetByCode(ctx, chargedCurrency)
 	if err != nil || cur == nil {
 		return PaymentMethodOption{}, false
 	}
 	chargedAmount := amountFor(plan.Prices, plan.PriceCents, *cur)
-	settleAmount := chargedAmount
-	settleCurrency := chargedCurrency
-	settleSymbol := cur.Symbol
-	if !strings.EqualFold(chargedCurrency, quote.SettlementCurrency) {
-		settleAmount = quote.SettlementAmount
+	// Settlement: prioriza o settlement_code da própria moeda (BTC/ETH/USDT
+	// settle em USDT por config; EUR settle em EUR). Fallback: quote.Settlement.
+	settleCurrency := cur.SettlementCode
+	if settleCurrency == "" {
 		settleCurrency = quote.SettlementCurrency
-		settleSymbol = quote.SettlementSymbol
+	}
+	settleCurrency = strings.ToUpper(strings.TrimSpace(settleCurrency))
+	settleAmount := chargedAmount
+	settleSymbol := cur.Symbol
+	if !strings.EqualFold(chargedCurrency, settleCurrency) {
+		settleCur, err := s.currencies.repo.GetByCode(ctx, settleCurrency)
+		if err == nil && settleCur != nil {
+			settleAmount = amountFor(plan.Prices, plan.PriceCents, *settleCur)
+			settleSymbol = settleCur.Symbol
+		} else {
+			settleAmount = quote.SettlementAmount
+			settleSymbol = quote.SettlementSymbol
+		}
+	}
+	// Nome da opção: pra gateways multi-currency, anexa a moeda pro card
+	// distinguir as N opções ("Heleket — pay in BTC" vs "Heleket — pay in USDT").
+	name := g.Name
+	if multiCurrencyProviders[strings.ToLower(strings.TrimSpace(g.Provider))] {
+		name = g.Name + " — pay in " + chargedCurrency
 	}
 	opt := PaymentMethodOption{
 		GatewayID:          g.ID,
 		Provider:           g.Provider,
-		Name:               g.Name,
+		Name:               name,
 		Kind:               kindOf(g.Provider),
 		ChargedCurrency:    chargedCurrency,
 		ChargedAmount:      chargedAmount,
@@ -168,15 +228,17 @@ func (s *CheckoutService) buildMethodOption(
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
 	}
-	// Transparência de conversão: o aviso é DRIVEN pela diferença entre
-	// o preço que o cliente VIU (display) e o que ele EFETIVAMENTE paga
-	// (charged). Se ele estava em EUR e escolheu USDT, precisa ver que
-	// o "€50" virou "X USDT" antes de confirmar. Quando charged == display
-	// (alemão escolheu Stripe em EUR), não há conversão a explicar.
+	// Transparência: aviso quando display ≠ charged (cliente viu €50,
+	// vai pagar X em BTC) OU quando charged ≠ settlement (paga em BTC,
+	// plataforma recebe em USDT — cobra fee implícita do processor).
 	if !strings.EqualFold(chargedCurrency, quote.DisplayCurrency) {
 		opt.ConversionNote = "Price shown: " + quote.DisplaySymbol + " " + quote.DisplayAmount +
 			" " + quote.DisplayCurrency + ". You pay " + cur.Symbol + " " + chargedAmount +
-			" " + chargedCurrency + " (converted at the current rate)."
+			" " + chargedCurrency + " — platform settles in " + settleCurrency +
+			" (" + settleAmount + " " + settleCurrency + ")."
+	} else if !strings.EqualFold(chargedCurrency, settleCurrency) {
+		opt.ConversionNote = "You pay " + cur.Symbol + " " + chargedAmount + " " + chargedCurrency +
+			"; platform receives " + settleAmount + " " + settleCurrency + " after auto-conversion."
 	}
 	if g.Provider == "manual_crypto" || g.Provider == "manual_usdt" {
 		if net := strings.TrimSpace(g.Config["network"]); net != "" {
@@ -192,6 +254,37 @@ func (s *CheckoutService) buildMethodOption(
 		}
 	}
 	return opt, true
+}
+
+// amountInCurrency calcula o valor de um plano em uma moeda específica.
+// Usado pelo checkout quando o cliente escolhe uma moeda de pay-in (Heleket
+// multi-currency) — o charge precisa do amount já convertido pra essa moeda.
+// Retorna (amount, code-normalized, ok). ok=false quando a moeda não está
+// cadastrada no pool de currencies.
+func (s *CheckoutService) amountInCurrency(ctx context.Context, plan *domain.Plan, currencyCode string) (string, string, bool) {
+	code := strings.ToUpper(strings.TrimSpace(currencyCode))
+	if code == "" {
+		return "", "", false
+	}
+	cur, err := s.currencies.repo.GetByCode(ctx, code)
+	if err != nil || cur == nil {
+		return "", "", false
+	}
+	return amountFor(plan.Prices, plan.PriceCents, *cur), code, true
+}
+
+// gwAccepts verifica se um gateway tem currency code em sua lista de
+// accepted_currencies. Case-insensitive, trim. Defense in depth: cliente
+// pode mandar pay_currency arbitrário no payload; gateway só aceita o que
+// admin cadastrou.
+func gwAccepts(g *domain.PaymentGateway, code string) bool {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	for _, c := range g.AcceptedCurrencies {
+		if strings.ToUpper(strings.TrimSpace(c)) == code {
+			return true
+		}
+	}
+	return false
 }
 
 // pickChargedCurrency escolhe a moeda em que o gateway efetivamente cobra.
