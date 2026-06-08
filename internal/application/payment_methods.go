@@ -87,26 +87,31 @@ func (s *CheckoutService) ListPaymentMethods(
 	return out, nil
 }
 
-// gatewayEligible decide se um gateway deve aparecer pro cliente. Regra:
-//   - Gateway aceita display_currency OU settlement_currency → mostra
-//   - PIX (BRL) só aparece se o cliente está em BRL OU country=br (mesmo
-//     que o display seja outro — ex.: brasileiro vendo preço em USD)
-//   - "Universal" providers (Stripe/heleket) ficam visíveis sempre que a
-//     settlement currency bater
-//
-// Sem isso, o catálogo retornava TUDO e o cliente alemão via "Pay R$X
-// via PIX" — útil pra ninguém, confuso pra todos.
+// gatewayEligible decide se um gateway deve aparecer pro cliente. Regras:
+//   - USDT é UNIVERSAL: qualquer gateway que aceita USDT aparece pra todo
+//     mundo (display=BRL, display=EUR, display=USD, qualquer). Conversão
+//     é transparente via conversion_note no card.
+//   - Gateway que aceita a display_currency atual → mostra (cliente vê o
+//     preço já naquela moeda)
+//   - Gateway que aceita a settlement_currency derivada do quote → mostra
+//   - PIX/BRL → aparece também se country=br (brasileiro navegando em outra
+//     moeda ainda deve ver PIX)
+//   - Qualquer outro caso → esconde (alemão não precisa ver R$ via PIX)
 func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrency, country string) bool {
 	display := strings.ToUpper(strings.TrimSpace(displayCurrency))
 	settle := strings.ToUpper(strings.TrimSpace(settlementCurrency))
 	country = strings.ToLower(strings.TrimSpace(country))
 	for _, raw := range g.AcceptedCurrencies {
 		c := strings.ToUpper(strings.TrimSpace(raw))
+		// USDT é universal — sempre visível. Cliente em qualquer moeda
+		// pode escolher pagar em USDT; o card mostra a conversão.
+		if c == "USDT" {
+			return true
+		}
 		if c == display || c == settle {
 			return true
 		}
 		// PIX/BRL: brasileiro navegando em USD/EUR ainda deve ver PIX.
-		// Outros tipos de gateway BRL-only seguem a mesma regra.
 		if c == "BRL" && country == "br" {
 			return true
 		}
@@ -151,10 +156,15 @@ func (s *CheckoutService) buildMethodOption(
 		DisplayCurrency:    quote.DisplayCurrency,
 		DisplayAmount:      quote.DisplayAmount,
 	}
-	if !strings.EqualFold(chargedCurrency, settleCurrency) {
-		opt.ConversionNote = "You pay " + chargedAmount + " " + chargedCurrency +
-			"; the platform receives " + settleAmount + " " + settleCurrency +
-			" after conversion."
+	// Transparência de conversão: o aviso é DRIVEN pela diferença entre
+	// o preço que o cliente VIU (display) e o que ele EFETIVAMENTE paga
+	// (charged). Se ele estava em EUR e escolheu USDT, precisa ver que
+	// o "€50" virou "X USDT" antes de confirmar. Quando charged == display
+	// (alemão escolheu Stripe em EUR), não há conversão a explicar.
+	if !strings.EqualFold(chargedCurrency, quote.DisplayCurrency) {
+		opt.ConversionNote = "Price shown: " + quote.DisplaySymbol + " " + quote.DisplayAmount +
+			" " + quote.DisplayCurrency + ". You pay " + cur.Symbol + " " + chargedAmount +
+			" " + chargedCurrency + " (converted at the current rate)."
 	}
 	if g.Provider == "manual_crypto" || g.Provider == "manual_usdt" {
 		if net := strings.TrimSpace(g.Config["network"]); net != "" {
