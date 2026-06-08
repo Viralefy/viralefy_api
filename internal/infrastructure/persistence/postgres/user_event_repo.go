@@ -172,12 +172,13 @@ func (r *UserEventRepo) GetJourney(ctx context.Context, userID string) (*domain.
 }
 
 // UpsertJourney cria ou atualiza o agregado.
-// INSERT inicial grava landing_* (first-touch).
-// UPDATE em conflito mantém landing_* originais (COALESCE não aplicado —
-// os campos passados no UPDATE são apenas last_seen_at e contadores).
-// total_events é incrementado em +1 a cada chamada; total_orders só é
-// bumpado externamente (via UPDATE direto no service de order, fora deste
-// caminho — aqui mantém o valor existente).
+//
+// Invariante first-touch wins: landing_* só é gravado uma vez por user.
+// Não confiamos no SERVICE pra garantir ordenação porque o primeiro evento
+// observado pode não ser type='landing' (ex.: signup pré-pageview). COALESCE
+// no UPDATE garante: existente ganha. Quando existente é NULL (caso comum
+// se o primeiro evento foi 'click' antes do pageview chegar), o EXCLUDED
+// (landing event posterior) preenche.
 func (r *UserEventRepo) UpsertJourney(ctx context.Context, j domain.UserJourney) error {
 	var landingUTMJSON []byte
 	if j.LandingUTM != nil {
@@ -194,8 +195,11 @@ func (r *UserEventRepo) UpsertJourney(ctx context.Context, j domain.UserJourney)
 		VALUES ($1, NULLIF($2,''), NULLIF($3,''), $4::jsonb,
 		        NOW(), NOW(), 1, 0)
 		ON CONFLICT (user_id) DO UPDATE
-		   SET last_seen_at  = NOW(),
-		       total_events  = user_journeys.total_events + 1`,
+		   SET last_seen_at      = NOW(),
+		       total_events      = user_journeys.total_events + 1,
+		       landing_path      = COALESCE(user_journeys.landing_path, EXCLUDED.landing_path),
+		       landing_referrer  = COALESCE(user_journeys.landing_referrer, EXCLUDED.landing_referrer),
+		       landing_utm       = COALESCE(user_journeys.landing_utm, EXCLUDED.landing_utm)`,
 		j.UserID, j.LandingPath, j.LandingReferrer, nullableJSON(landingUTMJSON),
 	)
 	return err

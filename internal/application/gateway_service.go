@@ -58,9 +58,20 @@ type CreateGatewayInput struct {
 	AcceptedCurrencies []string          `json:"accepted_currencies"`
 }
 
+// providerDefaultCurrencies — moedas aceitas naturalmente por cada provider.
+// Usado quando admin cria gateway sem currencies explícitos (defaults
+// inteligentes em vez do default genérico da migration 032 que botava
+// USDT/USD em tudo, errado pra PIX).
+var providerDefaultCurrencies = map[string][]string{
+	"woovi":      {"BRL"},
+	"manual_pix": {"BRL"},
+	"heleket":    {"USDT", "USD", "EUR", "BTC"},
+}
+
 // validateGateway centraliza as regras de provider + accepted_currencies.
 // Gateway active=true SEM moedas é a pior pegadinha (checkout escolhe ele,
 // não encontra moeda compatível, e o pedido morre em "no gateway available").
+// Quando currencies vem vazio, aplica os defaults do provider.
 func validateGateway(provider string, active bool, currencies []string) ([]string, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if !validProviders[provider] {
@@ -78,6 +89,12 @@ func validateGateway(provider string, active bool, currencies []string) ([]strin
 		}
 		seen[c] = true
 		out = append(out, c)
+	}
+	// Fallback pra defaults do provider quando vazio.
+	if len(out) == 0 {
+		if def, ok := providerDefaultCurrencies[provider]; ok {
+			out = append(out, def...)
+		}
 	}
 	if active && len(out) == 0 {
 		return nil, domain.ErrInvalidInput

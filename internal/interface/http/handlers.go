@@ -2036,6 +2036,10 @@ func (h *Handlers) PublicTrackEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrNotFound)
 		return
 	}
+	// Cap body em 1MB. Endpoint público sem auth — payload/utm map[string]any
+	// poderia receber 100MB JSON e esgotar memória. 1MB cobre largest legítimo
+	// (batch de 10 eventos com payload moderado) com folga.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		VisitorID string         `json:"visitor_id"`
 		EventType string         `json:"event_type"`

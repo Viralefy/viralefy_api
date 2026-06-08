@@ -454,7 +454,7 @@ func TestSecurity_NotFoundDoesNotLeakInternals(t *testing.T) {
 		return resp.StatusCode, b
 	}
 
-	statusReal, bodyReal := collect("order-B")         // existe mas é de outro
+	statusReal, bodyReal := collect("order-B")            // existe mas é de outro
 	statusFake, bodyFake := collect("order-DOESNT-EXIST") // não existe
 
 	if statusReal != statusFake {

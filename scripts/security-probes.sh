@@ -112,7 +112,9 @@ probe_cors() {
     -H 'Access-Control-Request-Method: GET' \
     "$API/v1/plans" | tr -d '\r')
   allow_origin=$(printf '%s\n' "$hdrs" | awk -F': ' 'tolower($1)=="access-control-allow-origin" {print $2; exit}')
-  if [ -z "$allow_origin" ] || [ "$allow_origin" != "$evil" ] && [ "$allow_origin" != "*" ]; then
+  # Pass se: header ausente OU (não-eco do evil AND não-wildcard).
+  # Fail se: header refletiu evil ou liberou wildcard a uma Origin de teste.
+  if [ -z "$allow_origin" ] || { [ "$allow_origin" != "$evil" ] && [ "$allow_origin" != "*" ]; }; then
     probe_pass "cors: random Origin not echoed in Access-Control-Allow-Origin (got: ${allow_origin:-<absent>})"
   else
     probe_fail "cors: random Origin reflected → $allow_origin (CSRF/data-exfil risk)"
