@@ -153,6 +153,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Use(adminAuth)
 
 			r.Get("/me", h.AdminMe)
+			r.Post("/me/become-customer", h.AdminBecomeCustomer)
 			r.With(RequirePermission(domain.PermAdminsManage)).Get("/roles", h.AdminListRoles)
 
 			r.With(RequirePermission(domain.PermPlansRead)).Get("/plans", h.AdminListPlans)

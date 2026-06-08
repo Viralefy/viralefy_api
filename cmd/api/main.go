@@ -118,6 +118,7 @@ func main() {
 		payment.NewWoovi(),
 		payment.NewHeleket(),
 		payment.NewManualPIX(),
+		payment.NewManualUSDT(),
 	)
 
 	planSvc := application.NewPlanService(planRepo)

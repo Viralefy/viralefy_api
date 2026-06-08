@@ -523,6 +523,36 @@ func (h *Handlers) AdminMe(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, p)
 }
 
+// AdminBecomeCustomer cria (se necessário) um user record com o mesmo
+// email/name do admin logado e devolve uma UserSession. Permite ao admin
+// abrir o lado de customer sem precisar de outro registro/login.
+//
+// Não é login impersonation — é provisionamento idempotente de um shadow
+// account paralelo. O password gerado (apenas no PRIMEIRO chamado) é
+// devolvido junto pro admin guardar se quiser usar /login normalmente
+// depois.
+func (h *Handlers) AdminBecomeCustomer(w http.ResponseWriter, r *http.Request) {
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	adminRow, err := h.Auth.GetAdminByID(r.Context(), p.AdminID)
+	if err != nil || adminRow == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	sess, generatedPwd, err := h.UserAuth.EnsureShadowAccount(r.Context(), adminRow.Email, adminRow.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"session":            sess,
+		"generated_password": generatedPwd, // vazio se user já existia
+	})
+}
+
 func (h *Handlers) AdminListRoles(w http.ResponseWriter, r *http.Request) {
 	roles, err := h.Auth.Roles(r.Context())
 	if err != nil {

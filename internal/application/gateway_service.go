@@ -20,9 +20,10 @@ func NewGatewayService(repo domain.GatewayRepository) *GatewayService {
 // com o seletor do backoffice (gateways/page.tsx). Heleket/Woovi/ManualPIX
 // têm handlers de webhook específicos; qualquer outro provider seria órfão.
 var validProviders = map[string]bool{
-	"woovi":      true,
-	"heleket":    true,
-	"manual_pix": true,
+	"woovi":       true,
+	"heleket":     true,
+	"manual_pix":  true,
+	"manual_usdt": true,
 }
 
 // validCurrency aceita qualquer ISO 4217 maiúsculo de 3 letras OU códigos
@@ -63,9 +64,10 @@ type CreateGatewayInput struct {
 // inteligentes em vez do default genérico da migration 032 que botava
 // USDT/USD em tudo, errado pra PIX).
 var providerDefaultCurrencies = map[string][]string{
-	"woovi":      {"BRL"},
-	"manual_pix": {"BRL"},
-	"heleket":    {"USDT", "USD", "EUR", "BTC"},
+	"woovi":       {"BRL"},
+	"manual_pix":  {"BRL"},
+	"manual_usdt": {"USDT", "USD"},
+	"heleket":     {"USDT", "USD", "EUR", "BTC"},
 }
 
 // validateGateway centraliza as regras de provider + accepted_currencies.

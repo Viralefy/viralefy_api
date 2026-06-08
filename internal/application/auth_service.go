@@ -166,6 +166,12 @@ func (s *AuthService) Roles(ctx context.Context) ([]domain.Role, error) {
 	return s.roles.List(ctx)
 }
 
+// GetAdminByID — usado pelo handler AdminBecomeCustomer pra ler email/name
+// do principal autenticado.
+func (s *AuthService) GetAdminByID(ctx context.Context, id string) (*domain.Admin, error) {
+	return s.admins.GetByID(ctx, id)
+}
+
 func deriveKID(priv *rsa.PrivateKey) string {
 	if priv == nil {
 		return ""

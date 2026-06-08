@@ -16,4 +16,5 @@ type Admin struct {
 
 type AdminRepository interface {
 	GetByEmail(ctx context.Context, email string) (*Admin, error)
+	GetByID(ctx context.Context, id string) (*Admin, error)
 }

@@ -114,6 +114,48 @@ func (s *UserAuthService) Login(ctx context.Context, email, password string) (*U
 	return s.session(*u)
 }
 
+// EnsureShadowAccount cria (se não existir) um user com o email/name do
+// admin e devolve uma UserSession. Usado pelo botão "Open customer side"
+// no backoffice — admin testa o fluxo de compra como customer sem precisar
+// de outra conta.
+//
+// Política de senha: se o user é criado agora, gera senha aleatória forte
+// e DEVOLVE em GeneratedPassword na response (mostrar UMA vez no backoffice
+// e o admin guarda em password manager se quiser usar /login depois).
+// Se user já existe, GeneratedPassword fica vazio.
+func (s *UserAuthService) EnsureShadowAccount(ctx context.Context, email, name string) (*UserSession, string, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return nil, "", domain.ErrInvalidInput
+	}
+	if existing, _ := s.users.GetByEmail(ctx, email); existing != nil {
+		sess, err := s.session(*existing)
+		return sess, "", err
+	}
+	if name == "" {
+		name = email
+	}
+	pwd := GeneratePassword()
+	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), 12)
+	if err != nil {
+		return nil, "", err
+	}
+	u := domain.User{
+		ID:           uuid.New().String(),
+		Email:        email,
+		Name:         name,
+		PasswordHash: string(hash),
+	}
+	if err := s.users.Create(ctx, u); err != nil {
+		return nil, "", err
+	}
+	sess, err := s.session(u)
+	if err != nil {
+		return nil, "", err
+	}
+	return sess, pwd, nil
+}
+
 func (s *UserAuthService) session(u domain.User) (*UserSession, error) {
 	exp := time.Now().UTC().Add(s.ttl)
 	claims := jwt.MapClaims{
