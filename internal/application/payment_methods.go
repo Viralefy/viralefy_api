@@ -107,22 +107,46 @@ var cryptoProviders = map[string]bool{
 	"heleket":       true,
 }
 
-// gatewayEligible decide se um gateway deve aparecer pro cliente. Regras:
-//   - Crypto provider que aceita USDT → UNIVERSAL: aparece pra todo display
-//     currency. Conversão é resolvida e transparente via conversion_note.
-//   - Gateway (qualquer provider) que aceita a display_currency atual →
-//     mostra (cliente vê o preço já naquela moeda)
-//   - Gateway que aceita a settlement_currency derivada do quote → mostra
-//   - PIX/BRL → aparece também se country=br (brasileiro em outra moeda)
-//   - Qualquer outro caso → esconde
+// brOnlyProviders — providers que SÓ fazem sentido pra cliente brasileiro.
+// PIX é rail doméstico do Banco Central; um alemão em EUR ou americano em
+// USD não tem como gerar PIX. Mostrar PIX pra eles é mentira que confunde
+// (e foi a desgraça que veio assombrando 3 revisões da lógica de filtro).
 //
-// PIX que tenha USDT marcado na lista por engano NÃO recebe o passe
-// universal — provider matters more than the config typo.
+// REGRA HARD: esses providers SÓ aparecem se country=="br". Display ou
+// settlement currency em BRL NÃO é suficiente — currency é preferência
+// de visualização, não nacionalidade. Sem country detectado → esconde.
+var brOnlyProviders = map[string]bool{
+	"manual_pix": true,
+	"woovi":      true,
+}
+
+// gatewayEligible decide se um gateway deve aparecer pro cliente. Regras
+// em ordem de precedência:
+//
+//  1. brOnlyProviders (PIX/Woovi): country DEVE ser "br". Ponto.
+//     Display=BRL pra alemão NÃO conta. Esconde se country vazio.
+//  2. cryptoProviders com USDT: UNIVERSAL — qualquer display, conversão
+//     resolvida via conversion_note.
+//  3. Display ou settlement currency em accepted_currencies → mostra.
+//  4. Qualquer outro caso → esconde.
+//
+// PIX é a regra mais sensível e a causa de bugs sucessivos: USDT marcado
+// na lista por engano, fallback de pickGateway pegando o único ativo,
+// display=BRL default de currency picker. Por isso bloqueio hard por
+// provider — não dá pra cliente internacional pagar via PIX nem com toda
+// boa vontade do mundo, então simplesmente não oferecemos a opção.
 func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrency, country string) bool {
 	display := strings.ToUpper(strings.TrimSpace(displayCurrency))
 	settle := strings.ToUpper(strings.TrimSpace(settlementCurrency))
 	country = strings.ToLower(strings.TrimSpace(country))
-	isCrypto := cryptoProviders[strings.ToLower(strings.TrimSpace(g.Provider))]
+	provider := strings.ToLower(strings.TrimSpace(g.Provider))
+
+	// Regra 1: BR-only. PIX/Woovi → SÓ se country=br. Curto-circuita TUDO.
+	if brOnlyProviders[provider] {
+		return country == "br"
+	}
+
+	isCrypto := cryptoProviders[provider]
 	for _, raw := range g.AcceptedCurrencies {
 		c := strings.ToUpper(strings.TrimSpace(raw))
 		// USDT universal SÓ pra crypto providers reais.
@@ -130,10 +154,6 @@ func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrenc
 			return true
 		}
 		if c == display || c == settle {
-			return true
-		}
-		// PIX/BRL: brasileiro navegando em USD/EUR ainda deve ver PIX.
-		if c == "BRL" && country == "br" {
 			return true
 		}
 	}

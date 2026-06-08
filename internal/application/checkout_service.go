@@ -391,53 +391,55 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	// Fluxo novo: cliente pode passar GatewayID escolhido na UI de seleção
 	// de métodos. Validamos que o gateway está ativo e aceita a settlement
 	// currency. Fallback: pickGateway por settlement (back-compat).
-	gw := s.resolveGateway(ctx, in.GatewayID, quote.SettlementCurrency)
-	if gw != nil {
-		order.GatewayID = &gw.ID
+	gw := s.resolveGateway(ctx, in.GatewayID, quote.SettlementCurrency, in.Country)
+	// Pagamento via gateway exige UM gateway válido. Sem ele, recusa o
+	// checkout antes de criar a order — evita pedido pending órfão e
+	// elimina a porta de entrada que deixava PIX vazar pra internacional
+	// via pickGateway/default-active.
+	if gw == nil {
+		return nil, domain.ErrInvalidInput
 	}
+	order.GatewayID = &gw.ID
 	if err := s.orders.Create(ctx, order); err != nil {
 		return nil, err
 	}
 	s.redeemCoupon(ctx, couponCodeApplied, orderID, in.Email, couponDiscountUSDCents)
 	s.fireBaselineCapture(orderID)
 
-	provider := ""
+	provider := gw.Provider
 	var paymentURL string
 	var paymentExtra map[string]string
-	if gw != nil {
-		provider = gw.Provider
-		// Pra providers multi-currency (Heleket/Stripe) o cliente escolheu
-		// uma moeda específica pra pagar. Calculamos o amount nessa moeda
-		// e usamos no charge — Heleket cria invoice em BTC, Stripe sessão em
-		// EUR, etc. Pra providers single-currency (PIX/manual_crypto) o
-		// payCurrency é ignorado.
-		chargeAmount := quote.SettlementAmount
-		chargeCurrency := quote.SettlementCurrency
-		if in.PayCurrency != "" && multiCurrencyProviders[strings.ToLower(strings.TrimSpace(gw.Provider))] {
-			if amount, code, ok := s.amountInCurrency(ctx, plan, in.PayCurrency); ok && gwAccepts(gw, code) {
-				chargeAmount = amount
-				chargeCurrency = code
-			}
+	// Pra providers multi-currency (Heleket/Stripe) o cliente escolheu
+	// uma moeda específica pra pagar. Calculamos o amount nessa moeda e
+	// usamos no charge — Heleket cria invoice em BTC, Stripe sessão em
+	// EUR, etc. Pra providers single-currency (PIX/manual_crypto) o
+	// payCurrency é ignorado.
+	chargeAmount := quote.SettlementAmount
+	chargeCurrency := quote.SettlementCurrency
+	if in.PayCurrency != "" && multiCurrencyProviders[strings.ToLower(strings.TrimSpace(gw.Provider))] {
+		if amount, code, ok := s.amountInCurrency(ctx, plan, in.PayCurrency); ok && gwAccepts(gw, code) {
+			chargeAmount = amount
+			chargeCurrency = code
 		}
-		if p, ok := s.payments.Get(gw.Provider); ok {
-			charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
-				OrderID:     orderID,
-				Description: plan.Name,
-				Amount:      chargeAmount,
-				Currency:    chargeCurrency,
-				Customer:    PaymentCustomer{Name: in.Name, Email: in.Email},
-				Config:      gw.Config,
-			})
-			if perr != nil {
-				observability.FromContext(ctx).Warn("checkout: payment provider failed",
-					"provider", gw.Provider,
-					"error", perr.Error(),
-				)
-			} else {
-				paymentURL = charge.PaymentURL
-				paymentExtra = charge.Extra
-				_ = s.orders.UpdatePayment(ctx, orderID, charge.ExternalRef, charge.PaymentURL, charge.Extra)
-			}
+	}
+	if p, ok := s.payments.Get(gw.Provider); ok {
+		charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
+			OrderID:     orderID,
+			Description: plan.Name,
+			Amount:      chargeAmount,
+			Currency:    chargeCurrency,
+			Customer:    PaymentCustomer{Name: in.Name, Email: in.Email},
+			Config:      gw.Config,
+		})
+		if perr != nil {
+			observability.FromContext(ctx).Warn("checkout: payment provider failed",
+				"provider", gw.Provider,
+				"error", perr.Error(),
+			)
+		} else {
+			paymentURL = charge.PaymentURL
+			paymentExtra = charge.Extra
+			_ = s.orders.UpdatePayment(ctx, orderID, charge.ExternalRef, charge.PaymentURL, charge.Extra)
 		}
 	}
 
@@ -515,16 +517,28 @@ func (s *CheckoutService) resolveTarget(ctx context.Context, plan *domain.Plan, 
 // resolveGateway aplica a regra do fluxo novo: se o cliente escolheu um
 // gateway na UI de seleção, valida e usa esse; senão cai no pickGateway
 // (back-compat). Gateway inválido (desativado, inexistente, ou que não
-// aceita a settlement currency) → fallback silencioso pra pickGateway —
-// evitamos derrubar o checkout por gateway mal cadastrado; observabilidade
-// fica via logger no caminho B.
-func (s *CheckoutService) resolveGateway(ctx context.Context, gatewayID, settlement string) *domain.PaymentGateway {
+// aceita a settlement currency) → retorna nil. ZERO fallback silencioso.
+// O caller decide se rejeita o checkout ou tenta outro caminho.
+//
+// Aplica também o brOnly filter de gatewayEligible: se cliente mandou
+// gateway_id de PIX/Woovi mas country != "br", recusa. Sem essa camada,
+// um cliente malicioso (ou bug de UI) consegue forçar PIX em compra
+// internacional via id direto, e a desgraça reaparece.
+func (s *CheckoutService) resolveGateway(ctx context.Context, gatewayID, settlement, country string) *domain.PaymentGateway {
 	if gatewayID == "" {
-		return s.pickGateway(ctx, settlement)
+		return s.pickGateway(ctx, settlement, country)
 	}
 	g, err := s.gateways.GetByID(ctx, gatewayID)
 	if err != nil || g == nil || !g.Active {
-		return s.pickGateway(ctx, settlement)
+		return nil
+	}
+	// PIX/Woovi: country DEVE ser br. Trava hard mesmo que admin tenha
+	// configurado BRL na lista de accepted_currencies do gateway.
+	if brOnlyProviders[strings.ToLower(strings.TrimSpace(g.Provider))] {
+		if strings.ToLower(strings.TrimSpace(country)) != "br" {
+			return nil
+		}
+		return g
 	}
 	// Garantia: gateway aceita a moeda. Sem isso o customer escolheria
 	// "Stripe USD" pra um pedido em BRL e o charge quebraria.
@@ -534,15 +548,21 @@ func (s *CheckoutService) resolveGateway(ctx context.Context, gatewayID, settlem
 			return g
 		}
 	}
-	return s.pickGateway(ctx, settlement)
+	return nil
 }
 
-// pickGateway escolhe o gateway adequado para a moeda de liquidação.
-func (s *CheckoutService) pickGateway(ctx context.Context, settlement string) *domain.PaymentGateway {
+// pickGateway escolhe o gateway adequado pra moeda de liquidação no fluxo
+// legacy (sem gateway_id). Honra brOnly filter: PIX/Woovi só voltam pra
+// country=br. Internacional cai direto em crypto provider; se nenhum
+// estiver ativo, retorna nil pro caller rejeitar.
+func (s *CheckoutService) pickGateway(ctx context.Context, settlement, country string) *domain.PaymentGateway {
+	isBR := strings.ToLower(strings.TrimSpace(country)) == "br"
 	candidate := ""
 	switch strings.ToUpper(settlement) {
 	case "BRL":
-		candidate = "woovi"
+		if isBR {
+			candidate = "woovi"
+		}
 	case "USDT", "BTC":
 		candidate = "heleket"
 	}
@@ -551,7 +571,11 @@ func (s *CheckoutService) pickGateway(ctx context.Context, settlement string) *d
 			return g
 		}
 	}
+	// Fallback: default active. Mas SE for BR-only e country não-br, recusa.
 	g, _ := s.gateways.GetDefaultActive(ctx)
+	if g != nil && !isBR && brOnlyProviders[strings.ToLower(strings.TrimSpace(g.Provider))] {
+		return nil
+	}
 	return g
 }
 
