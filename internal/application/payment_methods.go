@@ -87,25 +87,37 @@ func (s *CheckoutService) ListPaymentMethods(
 	return out, nil
 }
 
+// cryptoProviders são os providers que efetivamente cobram em crypto
+// (USDT/BTC/etc.) — esses recebem o passe universal porque a conversão
+// é resolvida internamente. Providers fiat (PIX/Stripe) NÃO recebem,
+// mesmo se admin ticou USDT na lista de accepted_currencies por engano —
+// PIX literalmente só cobra BRL on-rail; aceitar USDT lá seria mentira.
+var cryptoProviders = map[string]bool{
+	"manual_crypto": true,
+	"manual_usdt":   true,
+	"heleket":       true,
+}
+
 // gatewayEligible decide se um gateway deve aparecer pro cliente. Regras:
-//   - USDT é UNIVERSAL: qualquer gateway que aceita USDT aparece pra todo
-//     mundo (display=BRL, display=EUR, display=USD, qualquer). Conversão
-//     é transparente via conversion_note no card.
-//   - Gateway que aceita a display_currency atual → mostra (cliente vê o
-//     preço já naquela moeda)
+//   - Crypto provider que aceita USDT → UNIVERSAL: aparece pra todo display
+//     currency. Conversão é resolvida e transparente via conversion_note.
+//   - Gateway (qualquer provider) que aceita a display_currency atual →
+//     mostra (cliente vê o preço já naquela moeda)
 //   - Gateway que aceita a settlement_currency derivada do quote → mostra
-//   - PIX/BRL → aparece também se country=br (brasileiro navegando em outra
-//     moeda ainda deve ver PIX)
-//   - Qualquer outro caso → esconde (alemão não precisa ver R$ via PIX)
+//   - PIX/BRL → aparece também se country=br (brasileiro em outra moeda)
+//   - Qualquer outro caso → esconde
+//
+// PIX que tenha USDT marcado na lista por engano NÃO recebe o passe
+// universal — provider matters more than the config typo.
 func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrency, country string) bool {
 	display := strings.ToUpper(strings.TrimSpace(displayCurrency))
 	settle := strings.ToUpper(strings.TrimSpace(settlementCurrency))
 	country = strings.ToLower(strings.TrimSpace(country))
+	isCrypto := cryptoProviders[strings.ToLower(strings.TrimSpace(g.Provider))]
 	for _, raw := range g.AcceptedCurrencies {
 		c := strings.ToUpper(strings.TrimSpace(raw))
-		// USDT é universal — sempre visível. Cliente em qualquer moeda
-		// pode escolher pagar em USDT; o card mostra a conversão.
-		if c == "USDT" {
+		// USDT universal SÓ pra crypto providers reais.
+		if c == "USDT" && isCrypto {
 			return true
 		}
 		if c == display || c == settle {
