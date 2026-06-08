@@ -60,6 +60,7 @@ type Handlers struct {
 	WhatsApp      *application.WhatsAppService
 	Vendors       *application.VendorService
 	APIKeys       *application.APIKeyService
+	Events        *application.UserEventService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -2012,3 +2013,98 @@ func (h *Handlers) MeCancelSubscription(w http.ResponseWriter, r *http.Request) 
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// --- User behavior tracking (Wave 5) --- //
+//
+// /v1/track é público (sem auth) — visitor_id é client-supplied via JS no
+// browser. Rate-limited via mutationLimiter pra mitigar abuso. Eventos são
+// granulares (pageview/click/modal_*/checkout_*/abandon/landing) e populam
+// user_events + bumpam user_journeys quando há sessão. Best-effort: erros
+// internos viram warn e devolvem 204 (não quebra UX).
+//
+// /v1/me/journey é a leitura autenticada do agregado + últimos 50 eventos
+// do user logado (usado pelo backoffice/account pra ver atribuição).
+
+// PublicTrackEvent — captura evento behavioral.
+// Body: { visitor_id, event_type, path?, referrer?, payload?, utm? }.
+// event_type whitelist: pageview | click | modal_open | modal_close |
+//                        checkout_start | checkout_complete | abandon | landing.
+// Quando há JWT user na request, popula user_id automaticamente (cross-
+// correlate anônimo→autenticado).
+func (h *Handlers) PublicTrackEvent(w http.ResponseWriter, r *http.Request) {
+	if h.Events == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	var body struct {
+		VisitorID string         `json:"visitor_id"`
+		EventType string         `json:"event_type"`
+		Path      string         `json:"path"`
+		Referrer  string         `json:"referrer"`
+		Payload   map[string]any `json:"payload,omitempty"`
+		UTM       map[string]any `json:"utm,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if body.VisitorID == "" || body.EventType == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if !application.IsAllowedEventType(body.EventType) {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	// user_id é opcional — só populado quando o request veio com JWT user.
+	uid := userIDFromContext(r.Context())
+	in := application.EventInput{
+		VisitorID: body.VisitorID,
+		UserID:    uid,
+		EventType: body.EventType,
+		Path:      body.Path,
+		Referrer:  body.Referrer,
+		Payload:   body.Payload,
+		UTM:       body.UTM,
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+	}
+	// RecordEvent é best-effort — não propaga erros (a não ser validação).
+	if err := h.Events.RecordEvent(r.Context(), in); err != nil {
+		// ErrInvalidInput vem da validação no service (defesa em
+		// profundidade). Devolve 400 nesse caso; outros erros já viraram
+		// warn no logger e o service retorna nil.
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// MeJourney — devolve o agregado do user logado + os últimos 50 eventos.
+// Resposta: { journey: UserJourney, events: []UserEvent }.
+func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
+	if h.Events == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	journey, err := h.Events.GetJourney(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	events, err := h.Events.ListByUser(r.Context(), userID, 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"journey": journey,
+		"events":  events,
+	})
+}
+

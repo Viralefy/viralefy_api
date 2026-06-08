@@ -11,8 +11,12 @@ type PaymentGateway struct {
 	Provider  string            `json:"provider"`
 	Active    bool              `json:"active"`
 	Config    map[string]string `json:"config"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	// AcceptedCurrencies lista os códigos ISO que esse gateway pode liquidar.
+	// Ex.: Woovi=["BRL"], Heleket=["USDT","BTC","USD"], ManualPIX=["BRL"].
+	// O checkout filtra gateways por essa lista antes de cobrar.
+	AcceptedCurrencies []string  `json:"accepted_currencies"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type GatewayRepository interface {

@@ -78,6 +78,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Get("/referrals/{code}/info", h.PublicReferralInfo)
 		r.With(mutationLimiter).Post("/ab/assign", h.PublicABAssign)
 		r.With(mutationLimiter).Post("/ab/track", h.PublicABTrack)
+		r.With(mutationLimiter).Post("/track", h.PublicTrackEvent)
 		r.Get("/tax-rates", h.PublicTaxRates)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
@@ -107,6 +108,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Get("/orders", h.MeOrders)
 			r.Get("/orders/{id}", h.MeGetOrder)
 			r.Get("/referral", h.MeGetMyReferral)
+			r.Get("/journey", h.MeJourney)
 
 			r.Get("/subscriptions", h.MeListMySubscriptions)
 			r.Post("/subscriptions", h.MeSubscribe)
