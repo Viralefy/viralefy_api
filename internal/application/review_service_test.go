@@ -127,6 +127,18 @@ func (f *fakeOrderRepoForReview) SetDeliveryMetrics(ctx context.Context, orderID
 func (f *fakeOrderRepoForReview) ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]domain.Order, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeOrderRepoForReview) AssignGateway(ctx context.Context, orderID, gatewayID string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForReview) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForReview) SetProofStatus(ctx context.Context, orderID, status, reviewerNote string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForReview) ListPendingProofs(ctx context.Context, limit int) ([]domain.OrderView, error) {
+	return nil, errors.New("not implemented")
+}
 
 // fakePlanRepoForReview retorna um plan fixo por id.
 type fakePlanRepoForReview struct{}

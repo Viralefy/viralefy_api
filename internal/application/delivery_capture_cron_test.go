@@ -83,6 +83,22 @@ func (f *fakeOrderRepoForCron) SetDeliveryMetrics(ctx context.Context, orderID s
 	return domain.ErrNotFound
 }
 
+// Stubs adicionados pra OrderRepository nova (migration 034 — proof + assign).
+// Não exercitados por este test suite; retornam erro pra evitar chamadas
+// silenciosas indevidas no caminho do cron de delivery capture.
+func (f *fakeOrderRepoForCron) AssignGateway(ctx context.Context, orderID, gatewayID string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) SetProofStatus(ctx context.Context, orderID, status, reviewerNote string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) ListPendingProofs(ctx context.Context, limit int) ([]domain.OrderView, error) {
+	return nil, errors.New("not implemented")
+}
+
 // ListReadyForDeliveryCapture: replica a query SQL em memória.
 func (f *fakeOrderRepoForCron) ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]domain.Order, error) {
 	f.mu.Lock()

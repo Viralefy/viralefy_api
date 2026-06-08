@@ -233,6 +233,12 @@ func main() {
 	idemCleanup := &application.IdempotencyCleanupCron{DB: db}
 	idemCleanup.Start(context.Background())
 
+	// Cron de retenção pra tabelas append-only de eventos (user_events,
+	// ab_events, email_events). MaxAge=90d cobre look-back de Meta CAPI (28d)
+	// + cohort analysis. user_journeys agregado fica intacto pra remarketing.
+	eventRetention := &application.EventRetentionCron{DB: db}
+	eventRetention.Start(context.Background())
+
 	// Cron de drift em plan_prices: alerta se algum row fugir da fórmula
 	// USD/100 * rate. Defensiva contra a regressão 2026-06-06 (rate change
 	// sem cascade) voltar.
