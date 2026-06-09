@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -48,6 +50,11 @@ type Config struct {
 	// = storage disabled (handler retorna ErrNotImplemented, sistema cai no
 	// fluxo legado de base64 inline pra back-compat durante a migração).
 	Storage StorageConfig
+
+	// TwoFAEncryptionKey — AES-256 (32 bytes) pra cifrar secrets TOTP em
+	// rest. Hex 64 chars OU base64 44 chars. Vazio = 2FA disabled (handlers
+	// retornam 503). Instalador gera + persiste em /etc/viralefy/.env.
+	TwoFAEncryptionKey []byte
 }
 
 type StorageConfig struct {
@@ -108,6 +115,12 @@ func Load() (Config, error) {
 			BucketPublic: getenv("STORAGE_BUCKET_PUBLIC", "viralefy-public"),
 		},
 	}
+	// 2FA encryption key: hex(64) ou base64(44). Vazio → 2FA off.
+	if raw := strings.TrimSpace(getenv("TWOFA_ENCRYPTION_KEY", "")); raw != "" {
+		if b, err := parse2FAKey(raw); err == nil {
+			cfg.TwoFAEncryptionKey = b
+		}
+	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")
 	}
@@ -129,6 +142,24 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// parse2FAKey aceita hex 64 chars OU base64 44 (com padding) / 43 (sem).
+// Retorna []byte len=32 ou erro. Inline aqui pra não criar dep cycle
+// config → application/totp.
+func parse2FAKey(s string) ([]byte, error) {
+	if len(s) == 64 {
+		if b, err := hex.DecodeString(s); err == nil && len(b) == 32 {
+			return b, nil
+		}
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == 32 {
+		return b, nil
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil && len(b) == 32 {
+		return b, nil
+	}
+	return nil, fmt.Errorf("TWOFA_ENCRYPTION_KEY must be 32 bytes (hex 64 or base64 44/43 chars)")
 }
 
 func split(s string, sep byte) []string {

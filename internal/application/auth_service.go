@@ -30,6 +30,9 @@ type AuthService struct {
 	legacyHS256Disabled bool
 	kid                 string
 	ttl                 time.Duration
+	// twoFA é opcional. Sem ele, Login pula o gate de 2FA (HML/dev).
+	// Setado via SetTwoFA no main wire-up quando TWOFA_ENCRYPTION_KEY presente.
+	twoFA *TwoFAService
 }
 
 // SetLegacyHS256Disabled hard-disable HS256 sem reset do secret (permite
@@ -62,6 +65,15 @@ type LoginResult struct {
 	Name        string    `json:"name"`
 	Role        string    `json:"role"`
 	Permissions []string  `json:"permissions"`
+	// TwoFARequired sinaliza que o cliente DEVE chamar /v1/auth/login/2fa
+	// passando esse PartialToken + código TOTP pra obter o token final.
+	// Quando true: Token vem vazio, PartialToken vem com TTL 5min e claims
+	// {typ: "admin_partial", sub: admin_id} — middleware adminAuth rejeita
+	// esse typ. Quando false (admin sem requires_2fa ativo OU sem enroll):
+	// Token vem direto e PartialToken vazio (back-compat com clients antigos).
+	TwoFARequired       bool   `json:"twofa_required,omitempty"`
+	TwoFAEnrollRequired bool   `json:"twofa_enroll_required,omitempty"`
+	PartialToken        string `json:"partial_token,omitempty"`
 }
 
 func (s *AuthService) Login(ctx context.Context, in LoginInput) (*LoginResult, error) {
@@ -73,6 +85,58 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*LoginResult, e
 	if bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(in.Password)) != nil {
 		return nil, domain.ErrUnauthorized
 	}
+	// 2FA gate: quando requires_2fa AND TwoFA está plugado, retorna
+	// partial_token + flag pro client chamar /auth/login/2fa.
+	// admin.RequiresTwoFA é populado no GetByEmail (migration 036). Sem
+	// TwoFA service plugado (env vazio), pula o gate — fallback p/ HML.
+	if s.twoFA != nil && admin.RequiresTwoFA {
+		enrolled := s.twoFA.IsEnrolled(ctx, admin.ID)
+		partial, err := s.issuePartialToken(admin.ID, !enrolled)
+		if err != nil {
+			return nil, err
+		}
+		return &LoginResult{
+			AdminID:             admin.ID,
+			Email:               admin.Email,
+			Name:                admin.Name,
+			Role:                admin.Role,
+			TwoFARequired:       enrolled,
+			TwoFAEnrollRequired: !enrolled,
+			PartialToken:        partial,
+		}, nil
+	}
+	return s.issueFinalToken(ctx, admin)
+}
+
+// CompleteLoginWith2FA é o segundo step do login quando 2FA é requerido.
+// Valida partial_token + código TOTP/backup, retorna o JWT final.
+func (s *AuthService) CompleteLoginWith2FA(ctx context.Context, partialToken, code string) (*LoginResult, error) {
+	if s.twoFA == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	claims, err := s.parseDualSign(partialToken)
+	if err != nil {
+		return nil, domain.ErrUnauthorized
+	}
+	if typ, _ := claims["typ"].(string); typ != "admin_partial" {
+		return nil, domain.ErrUnauthorized
+	}
+	adminID, _ := claims["sub"].(string)
+	if adminID == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	if err := s.twoFA.Verify(ctx, adminID, code); err != nil {
+		return nil, domain.ErrUnauthorized
+	}
+	admin, err := s.admins.GetByID(ctx, adminID)
+	if err != nil || admin == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	return s.issueFinalToken(ctx, admin)
+}
+
+// issueFinalToken emite o JWT admin "real" (typ=admin, TTL completo).
+func (s *AuthService) issueFinalToken(ctx context.Context, admin *domain.Admin) (*LoginResult, error) {
 	perms, err := s.roles.GetPermissions(ctx, admin.Role)
 	if err != nil {
 		return nil, err
@@ -103,6 +167,47 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*LoginResult, e
 		Role:        admin.Role,
 		Permissions: perms,
 	}, nil
+}
+
+// issuePartialToken emite JWT curto (5min) com typ=admin_partial. middleware
+// adminAuth rejeita esse typ — só pode ser usado em /auth/login/2fa.
+// `enrollNeeded` é embutido pro front saber qual UI mostrar (setup wizard vs
+// código direto).
+func (s *AuthService) issuePartialToken(adminID string, enrollNeeded bool) (string, error) {
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	claims := jwt.MapClaims{
+		"sub":           adminID,
+		"typ":           "admin_partial",
+		"enroll_needed": enrollNeeded,
+		"exp":           exp.Unix(),
+		"iat":           time.Now().UTC().Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	if s.kid != "" {
+		tok.Header["kid"] = s.kid
+	}
+	return tok.SignedString(s.RSAPrivKey)
+}
+
+// SetTwoFA pluga o serviço de 2FA. Sem isso, Login pula o gate (HML/dev).
+func (s *AuthService) SetTwoFA(t *TwoFAService) { s.twoFA = t }
+
+// ParsePartialToken valida um partial_token (typ=admin_partial) e retorna
+// o adminID. Usado pelo handler de enroll pra autorizar a chamada sem
+// exigir JWT admin completo (admin ainda não terminou 2FA setup).
+func (s *AuthService) ParsePartialToken(token string) (string, error) {
+	claims, err := s.parseDualSign(token)
+	if err != nil {
+		return "", domain.ErrUnauthorized
+	}
+	if typ, _ := claims["typ"].(string); typ != "admin_partial" {
+		return "", domain.ErrUnauthorized
+	}
+	sub, _ := claims["sub"].(string)
+	if sub == "" {
+		return "", domain.ErrUnauthorized
+	}
+	return sub, nil
 }
 
 // ValidateAdmin valida o token de admin e monta o Principal (com permissões

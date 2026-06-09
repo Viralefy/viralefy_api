@@ -99,6 +99,11 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 
 		// Auth admin (backoffice)
 		r.With(loginLimiter).Post("/auth/login", h.AdminLogin)
+		// 2FA flow: enroll roda na partial_token; complete (login final)
+		// roda também na partial_token. Ambos atrás do loginLimiter pra
+		// proteger contra brute-force do código TOTP.
+		r.With(loginLimiter).Post("/auth/login/2fa/enroll", h.AdminLoginEnroll2FA)
+		r.With(loginLimiter).Post("/auth/login/2fa", h.AdminLoginComplete2FA)
 
 		// Auth de usuário (loja)
 		r.With(loginLimiter).Post("/auth/user/register", h.UserRegister)
@@ -158,6 +163,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 
 			r.Get("/me", h.AdminMe)
 			r.Post("/me/become-customer", h.AdminBecomeCustomer)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/me/2fa/disable", h.AdminDisable2FA)
 			r.With(RequirePermission(domain.PermAdminsManage)).Get("/roles", h.AdminListRoles)
 
 			r.With(RequirePermission(domain.PermPlansRead)).Get("/plans", h.AdminListPlans)

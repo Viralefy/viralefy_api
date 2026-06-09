@@ -71,6 +71,10 @@ type Handlers struct {
 	// Storage S3-compat (MinIO local / Cloudflare R2). Quando disabled
 	// (NoopStorage), o proof upload cai no fluxo legado base64 inline.
 	Storage application.ObjectStorage
+	// AdminTwoFA — 2FA service pra principais admin. Setado quando
+	// TWOFA_ENCRYPTION_KEY presente no env. Nil = endpoints retornam 503
+	// e AuthService.Login não bloqueia em partial_token.
+	AdminTwoFA *application.TwoFAService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -2575,4 +2579,94 @@ func (h *Handlers) resolveProofURL(ctx context.Context, o *domain.Order) (string
 		return "", application.ErrStorageDisabled
 	}
 	return h.Storage.PresignedGetURL(ctx, "proofs", raw, 5*time.Minute)
+}
+
+// =====================================================================
+// 2FA — admin enroll + verify + login flow
+// =====================================================================
+
+// AdminLoginEnroll2FA — POST /v1/auth/login/2fa/enroll
+// Chamado quando AdminLogin retornou twofa_enroll_required=true. Body:
+// {partial_token}. Gera secret novo + 8 backup codes, persiste cifrado.
+// O wizard mostra QR + codes UMA vez; verificação real acontece via
+// AdminLoginComplete2FA com o primeiro código TOTP.
+func (h *Handlers) AdminLoginEnroll2FA(w http.ResponseWriter, r *http.Request) {
+	if h.AdminTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	var body struct {
+		PartialToken string `json:"partial_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	adminID, err := h.Auth.ParsePartialToken(body.PartialToken)
+	if err != nil {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	admin, err := h.Auth.GetAdminByID(r.Context(), adminID)
+	if err != nil || admin == nil {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	res, err := h.AdminTwoFA.Enroll(r.Context(), adminID, admin.Email)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, res)
+}
+
+// AdminLoginComplete2FA — POST /v1/auth/login/2fa
+// Segundo step do login. Body: {partial_token, code}. code é TOTP de 6
+// dígitos OU backup code 10 chars. Verifica e retorna o LoginResult final
+// (mesmo shape do AdminLogin happy path).
+func (h *Handlers) AdminLoginComplete2FA(w http.ResponseWriter, r *http.Request) {
+	if h.AdminTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	var body struct {
+		PartialToken string `json:"partial_token"`
+		Code         string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	res, err := h.Auth.CompleteLoginWith2FA(r.Context(), body.PartialToken, body.Code)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, res)
+}
+
+// AdminDisable2FA — POST /v1/admin/me/2fa/disable
+// Apenas superadmin (PermAdminsManage). Útil pra reset quando admin perdeu
+// device + backup codes. Audit log gravado pelo middleware admin.
+func (h *Handlers) AdminDisable2FA(w http.ResponseWriter, r *http.Request) {
+	if h.AdminTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	var body struct {
+		AdminID string `json:"admin_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if body.AdminID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.AdminTwoFA.Disable(r.Context(), body.AdminID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

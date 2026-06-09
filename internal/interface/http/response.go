@@ -41,6 +41,8 @@ func writeError(w http.ResponseWriter, err error) {
 		code, status, msg = "FORBIDDEN", http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrConflict):
 		code, status, msg = "CONFLICT", http.StatusConflict, err.Error()
+	case errors.Is(err, domain.ErrNotImplemented):
+		code, status, msg = "NOT_IMPLEMENTED", http.StatusServiceUnavailable, err.Error()
 	case errors.Is(err, domain.ErrCouponNotFound):
 		code, status, msg = "COUPON_NOT_FOUND", http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, domain.ErrCouponInactive),

@@ -6,12 +6,17 @@ import (
 )
 
 type Admin struct {
-	ID           string
-	Email        string
-	PasswordHash string
-	Name         string
-	Role         string
-	CreatedAt    time.Time
+	ID            string
+	Email         string
+	PasswordHash  string
+	Name          string
+	Role          string
+	// RequiresTwoFA — controla se o login bloqueia em partial_token quando
+	// 2FA service está plugado. Migration 036 default TRUE pra todos.
+	// Superadmin pode desabilitar via /admins/[id] em casos excepcionais
+	// (recovery, account compartilhada de servidor — não recomendado).
+	RequiresTwoFA bool
+	CreatedAt     time.Time
 }
 
 type AdminRepository interface {
