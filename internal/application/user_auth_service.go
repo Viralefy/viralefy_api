@@ -26,7 +26,25 @@ type UserAuthService struct {
 	// referrals opcional. Quando setado, Register chama RecordReferral se
 	// tracking[referrer_code] estiver presente. Best-effort.
 	referrals *ReferralService
+	// twoFA opcional. Quando o user tem 2FA enrolled, Login retorna
+	// UserSession com partial token; Complete2FA finaliza. User 2FA é
+	// OPCIONAL — se não enrolled, login passa direto (diferente de admin).
+	twoFA *TwoFAService
 }
+
+// SetTwoFA pluga o serviço de 2FA pra usuários.
+func (s *UserAuthService) SetTwoFA(t *TwoFAService) { s.twoFA = t }
+
+// IsTwoFAEnrolled — consultado pelo front em /v1/me/2fa/status.
+func (s *UserAuthService) IsTwoFAEnrolled(ctx context.Context, userID string) bool {
+	if s.twoFA == nil {
+		return false
+	}
+	return s.twoFA.IsEnrolled(ctx, userID)
+}
+
+// TwoFA expõe o service pra handlers (enroll/verify/disable).
+func (s *UserAuthService) TwoFA() *TwoFAService { return s.twoFA }
 
 // SetReferrals opt-in.
 func (s *UserAuthService) SetReferrals(svc *ReferralService) {
@@ -61,6 +79,12 @@ type UserSession struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 	User      UserView  `json:"user"`
+	// TwoFARequired sinaliza que UserSession é só estágio 1 (partial).
+	// Cliente DEVE chamar POST /v1/auth/user/login/2fa com partial_token +
+	// código pra obter Token final. User 2FA é opcional — só vem quando o
+	// usuário fez enroll prévio.
+	TwoFARequired bool   `json:"twofa_required,omitempty"`
+	PartialToken  string `json:"partial_token,omitempty"`
 }
 
 type UserView struct {
@@ -111,7 +135,63 @@ func (s *UserAuthService) Login(ctx context.Context, email, password string) (*U
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return nil, domain.ErrUnauthorized
 	}
+	// 2FA gate (OPCIONAL pro user): bloqueia em partial_token SÓ se
+	// user já fez enroll. Sem 2FA → login direto (diferente de admin
+	// que tem requires_2fa default TRUE).
+	if s.twoFA != nil && s.twoFA.IsEnrolled(ctx, u.ID) {
+		partial, err := s.issuePartialUserToken(u.ID)
+		if err != nil {
+			return nil, err
+		}
+		return &UserSession{
+			User:          UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram},
+			TwoFARequired: true,
+			PartialToken:  partial,
+		}, nil
+	}
 	return s.session(*u)
+}
+
+// CompleteLoginWith2FA — segundo step quando user tem 2FA. partial_token
+// tem typ=user_partial; valida + verifica código + retorna sessão final.
+func (s *UserAuthService) CompleteLoginWith2FA(ctx context.Context, partialToken, code string) (*UserSession, error) {
+	if s.twoFA == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	claims, err := s.parseDualSign(partialToken)
+	if err != nil {
+		return nil, domain.ErrUnauthorized
+	}
+	if typ, _ := claims["typ"].(string); typ != "user_partial" {
+		return nil, domain.ErrUnauthorized
+	}
+	userID, _ := claims["sub"].(string)
+	if userID == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	if err := s.twoFA.Verify(ctx, userID, code); err != nil {
+		return nil, domain.ErrUnauthorized
+	}
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil || u == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	return s.session(*u)
+}
+
+func (s *UserAuthService) issuePartialUserToken(userID string) (string, error) {
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	claims := jwt.MapClaims{
+		"sub": userID,
+		"typ": "user_partial",
+		"exp": exp.Unix(),
+		"iat": time.Now().UTC().Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	if s.kid != "" {
+		tok.Header["kid"] = s.kid
+	}
+	return tok.SignedString(s.RSAPrivKey)
 }
 
 // EnsureShadowAccount cria (se não existir) um user com o email/name do
@@ -177,6 +257,36 @@ func (s *UserAuthService) session(u domain.User) (*UserSession, error) {
 		ExpiresAt: exp,
 		User:      UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram},
 	}, nil
+}
+
+// parseDualSign aceita RS256 (atual) ou HS256 (legacy). Usado pro
+// partial token de 2FA (typ=user_partial) que não passa pelo ValidateToken
+// padrão (esse exige role=user no claim).
+func (s *UserAuthService) parseDualSign(tokenStr string) (jwt.MapClaims, error) {
+	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+		switch t.Method.(type) {
+		case *jwt.SigningMethodRSA:
+			if s.RSAPrivKey == nil {
+				return nil, domain.ErrUnauthorized
+			}
+			return &s.RSAPrivKey.PublicKey, nil
+		case *jwt.SigningMethodHMAC:
+			if s.legacyHS256Disabled || len(s.LegacyHS256Secret) == 0 {
+				return nil, domain.ErrUnauthorized
+			}
+			return s.LegacyHS256Secret, nil
+		default:
+			return nil, domain.ErrUnauthorized
+		}
+	})
+	if err != nil || !t.Valid {
+		return nil, domain.ErrUnauthorized
+	}
+	claims, ok := t.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, domain.ErrUnauthorized
+	}
+	return claims, nil
 }
 
 func (s *UserAuthService) ValidateToken(tokenStr string) (userID string, err error) {

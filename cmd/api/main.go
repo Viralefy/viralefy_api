@@ -178,15 +178,16 @@ func main() {
 	authSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
 	userAuthSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
 
-	// 2FA — quando TWOFA_ENCRYPTION_KEY ausente, service fica nil e os
-	// endpoints retornam 503 + Auth.Login pula o gate (HML/dev). Em prod
+	// 2FA — quando TWOFA_ENCRYPTION_KEY ausente, services ficam nil e os
+	// endpoints retornam 503 + logins não bloqueiam (HML/dev). Em prod
 	// o instalador gera a key na 1ª install + persiste em /etc/viralefy/.env.
-	var adminTwoFA *application.TwoFAService
+	var adminTwoFA, userTwoFA *application.TwoFAService
 	if len(cfg.TwoFAEncryptionKey) == 32 {
-		adminTwoFARepo := postgres.NewAdminTwoFARepo(db)
-		adminTwoFA = application.NewTwoFAService(adminTwoFARepo, cfg.TwoFAEncryptionKey)
+		adminTwoFA = application.NewTwoFAService(postgres.NewAdminTwoFARepo(db), cfg.TwoFAEncryptionKey)
+		userTwoFA = application.NewTwoFAService(postgres.NewUserTwoFARepo(db), cfg.TwoFAEncryptionKey)
 		authSvc.SetTwoFA(adminTwoFA)
-		logger.Info("2FA enabled (admin)")
+		userAuthSvc.SetTwoFA(userTwoFA)
+		logger.Info("2FA enabled (admin + user)")
 	} else {
 		logger.Warn("2FA disabled — TWOFA_ENCRYPTION_KEY missing or invalid (expected 32 bytes)")
 	}
@@ -307,6 +308,7 @@ func main() {
 		Email:           emailSender,
 		Storage:         buildStorage(cfg.Storage, logger),
 		AdminTwoFA:      adminTwoFA,
+		UserTwoFA:       userTwoFA,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).

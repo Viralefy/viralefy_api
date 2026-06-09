@@ -75,6 +75,9 @@ type Handlers struct {
 	// TWOFA_ENCRYPTION_KEY presente no env. Nil = endpoints retornam 503
 	// e AuthService.Login não bloqueia em partial_token.
 	AdminTwoFA *application.TwoFAService
+	// UserTwoFA — espelho pra usuários. Opcional pro user (Login não
+	// bloqueia se não enrolled). Nag controlado pelo prompt logic.
+	UserTwoFA *application.TwoFAService
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -2647,7 +2650,8 @@ func (h *Handlers) AdminLoginComplete2FA(w http.ResponseWriter, r *http.Request)
 
 // AdminDisable2FA — POST /v1/admin/me/2fa/disable
 // Apenas superadmin (PermAdminsManage). Útil pra reset quando admin perdeu
-// device + backup codes. Audit log gravado pelo middleware admin.
+// device + backup codes. Audit log gravado explicitamente — operação rara e
+// crítica que precisa de trilha permanente.
 func (h *Handlers) AdminDisable2FA(w http.ResponseWriter, r *http.Request) {
 	if h.AdminTwoFA == nil {
 		writeError(w, domain.ErrNotImplemented)
@@ -2655,6 +2659,7 @@ func (h *Handlers) AdminDisable2FA(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		AdminID string `json:"admin_id"`
+		Reason  string `json:"reason,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.ErrInvalidInput)
@@ -2664,9 +2669,285 @@ func (h *Handlers) AdminDisable2FA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+	actor, _ := principalFromContext(r.Context())
 	if err := h.AdminTwoFA.Disable(r.Context(), body.AdminID); err != nil {
 		writeError(w, err)
 		return
 	}
+	if h.Audit != nil {
+		h.Audit.Log(r.Context(), application.AuditEntry{
+			ActorType:  "admin",
+			ActorID:    actor.AdminID,
+			Action:     "admin.2fa.disable",
+			TargetType: "admin",
+			TargetID:   body.AdminID,
+			Metadata:   map[string]any{"reason": body.Reason},
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminBulkProofDecision — POST /v1/admin/proofs/bulk-decision
+// Body {order_ids: [], decision: "approved"|"rejected", note?}. Limita
+// 50 orders/call (anti foot-gun). Cada decisão é gravada individualmente
+// pra audit + idempotency. Retorna lista de {order_id, status} por linha.
+func (h *Handlers) AdminBulkProofDecision(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		OrderIDs []string `json:"order_ids"`
+		Decision string   `json:"decision"`
+		Note     string   `json:"note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	body.Decision = strings.ToLower(strings.TrimSpace(body.Decision))
+	if body.Decision != "approved" && body.Decision != "rejected" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if len(body.OrderIDs) == 0 || len(body.OrderIDs) > 50 {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	type rowResult struct {
+		OrderID string `json:"order_id"`
+		Status  string `json:"status"`
+		Reason  string `json:"reason,omitempty"`
+	}
+	results := make([]rowResult, 0, len(body.OrderIDs))
+	actor, _ := principalFromContext(r.Context())
+	for _, id := range body.OrderIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		res := rowResult{OrderID: id, Status: "applied"}
+		o, err := h.Orders.GetByID(r.Context(), id)
+		if err != nil || o == nil {
+			res.Status, res.Reason = "skipped", "not found"
+			results = append(results, res)
+			continue
+		}
+		if o.ProofURL == nil || *o.ProofURL == "" {
+			res.Status, res.Reason = "skipped", "no proof attached"
+			results = append(results, res)
+			continue
+		}
+		if err := h.Orders.SetProofStatus(r.Context(), id, body.Decision, body.Note); err != nil {
+			res.Status, res.Reason = "error", err.Error()
+			results = append(results, res)
+			continue
+		}
+		if body.Decision == "approved" {
+			if err := h.PaymentReceiver.MarkOrderPaid(r.Context(), id); err != nil {
+				res.Status, res.Reason = "error", err.Error()
+				results = append(results, res)
+				continue
+			}
+		} else if h.Email != nil {
+			if user, _ := h.Users.GetByID(r.Context(), o.UserID); user != nil {
+				_ = h.Email.Send(r.Context(), buildProofRejectionEmail(user.Name, user.Email, id, body.Note))
+			}
+		}
+		if h.Audit != nil {
+			h.Audit.Log(r.Context(), application.AuditEntry{
+				ActorType:  "admin",
+				ActorID:    actor.AdminID,
+				Action:     "proof.bulk." + body.Decision,
+				TargetType: "order",
+				TargetID:   id,
+				Metadata:   map[string]any{"note": body.Note},
+			})
+		}
+		results = append(results, res)
+	}
+	writeData(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// =====================================================================
+// 2FA — user enroll + verify + login + dismiss prompt
+// =====================================================================
+
+// UserLoginComplete2FA — POST /v1/auth/user/login/2fa
+// Body {partial_token, code}. Espelha o admin /auth/login/2fa.
+func (h *Handlers) UserLoginComplete2FA(w http.ResponseWriter, r *http.Request) {
+	if h.UserTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	var body struct {
+		PartialToken string `json:"partial_token"`
+		Code         string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	sess, err := h.UserAuth.CompleteLoginWith2FA(r.Context(), body.PartialToken, body.Code)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, sess)
+}
+
+// MeEnroll2FA — POST /v1/me/2fa/enroll
+// User logado pede setup. Gera secret + 8 backup codes UMA vez. Re-enroll
+// antes do primeiro Verify sobrescreve (sem deixar 2FA half-on).
+func (h *Handlers) MeEnroll2FA(w http.ResponseWriter, r *http.Request) {
+	if h.UserTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	user, err := h.Users.GetByID(r.Context(), userID)
+	if err != nil || user == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	res, err := h.UserTwoFA.Enroll(r.Context(), userID, user.Email)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, res)
+}
+
+// MeVerify2FA — POST /v1/me/2fa/verify
+// Primeira verificação após Enroll → marca enrolled_at. Subsequentes
+// verificações no login passam por UserLoginComplete2FA, não aqui.
+func (h *Handlers) MeVerify2FA(w http.ResponseWriter, r *http.Request) {
+	if h.UserTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.UserTwoFA.Verify(r.Context(), userID, body.Code); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// MeDisable2FA — POST /v1/me/2fa/disable
+// User self-service desativa o próprio 2FA. Diferente do admin (que precisa
+// passar pelo superadmin), o user pode desabilitar próprio.
+func (h *Handlers) MeDisable2FA(w http.ResponseWriter, r *http.Request) {
+	if h.UserTwoFA == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if err := h.UserTwoFA.Disable(r.Context(), userID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// MeDismiss2FAPrompt — POST /v1/me/2fa/dismiss-prompt
+// User clicou "Talvez depois" no modal de nag. Incrementa counter +
+// timestamp pra cooldown progressivo.
+func (h *Handlers) MeDismiss2FAPrompt(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.DB == nil {
+		writeError(w, domain.ErrNotImplemented)
+		return
+	}
+	if _, err := h.DB.Pool().Exec(r.Context(),
+		`UPDATE users
+		    SET twofa_prompt_dismissed_count = twofa_prompt_dismissed_count + 1,
+		        twofa_prompt_last_dismissed_at = NOW()
+		  WHERE id = $1`, userID); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// MeTwoFAStatus — GET /v1/me/2fa/status
+// Front consulta na primeira tela pós-login. Retorna {enrolled, should_prompt}.
+//
+// should_prompt = true sse TODOS true:
+//   - user NÃO está enrolled
+//   - user TEM ≥1 order com status='paid' AND delivery_captured_at != NULL
+//   - dismiss_count < 5 OU último_dismiss > 7d atrás
+//
+// "TEM ≥1 paid+delivered" é o gate de "atormentar". Sem dado sensível,
+// foda-se — não enche o saco.
+func (h *Handlers) MeTwoFAStatus(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	enrolled := false
+	if h.UserTwoFA != nil {
+		enrolled = h.UserTwoFA.IsEnrolled(r.Context(), userID)
+	}
+	shouldPrompt := false
+	if !enrolled && h.DB != nil {
+		shouldPrompt = h.computeShouldPrompt2FA(r.Context(), userID)
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"enrolled":      enrolled,
+		"should_prompt": shouldPrompt,
+	})
+}
+
+func (h *Handlers) computeShouldPrompt2FA(ctx context.Context, userID string) bool {
+	// Query única — evita 2 round-trips. Conta orders elegíveis + lê
+	// dismiss state na mesma row.
+	var hasCompleted bool
+	var dismissedCount int
+	var lastDismissed *time.Time
+	row := h.DB.Pool().QueryRow(ctx, `
+		SELECT
+		  EXISTS (
+		    SELECT 1 FROM orders
+		     WHERE user_id = $1
+		       AND status = 'paid'
+		       AND delivery_captured_at IS NOT NULL
+		  ),
+		  COALESCE(u.twofa_prompt_dismissed_count, 0),
+		  u.twofa_prompt_last_dismissed_at
+		  FROM users u WHERE u.id = $1`, userID)
+	if err := row.Scan(&hasCompleted, &dismissedCount, &lastDismissed); err != nil {
+		return false
+	}
+	if !hasCompleted {
+		return false
+	}
+	if dismissedCount < 5 {
+		return true
+	}
+	// 5+ dismissals: espera 7 dias entre prompts.
+	if lastDismissed == nil {
+		return true
+	}
+	return time.Since(*lastDismissed) > 7*24*time.Hour
 }

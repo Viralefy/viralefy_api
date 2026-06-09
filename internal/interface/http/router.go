@@ -108,6 +108,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		// Auth de usuário (loja)
 		r.With(loginLimiter).Post("/auth/user/register", h.UserRegister)
 		r.With(loginLimiter).Post("/auth/user/login", h.UserLogin)
+		r.With(loginLimiter).Post("/auth/user/login/2fa", h.UserLoginComplete2FA)
 
 		// Área logada do usuário
 		r.Route("/me", func(r chi.Router) {
@@ -118,6 +119,13 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Get("/orders/{id}/proof-url", h.MeGetProofURL)
 			r.Get("/referral", h.MeGetMyReferral)
 			r.Get("/journey", h.MeJourney)
+
+			// 2FA — opt-in pra user. status devolve {enrolled, should_prompt}.
+			r.Get("/2fa/status", h.MeTwoFAStatus)
+			r.With(mutationLimiter).Post("/2fa/enroll", h.MeEnroll2FA)
+			r.With(mutationLimiter).Post("/2fa/verify", h.MeVerify2FA)
+			r.With(mutationLimiter).Post("/2fa/disable", h.MeDisable2FA)
+			r.With(mutationLimiter).Post("/2fa/dismiss-prompt", h.MeDismiss2FAPrompt)
 
 			r.Get("/subscriptions", h.MeListMySubscriptions)
 			r.Post("/subscriptions", h.MeSubscribe)
@@ -229,6 +237,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/proofs/pending", h.AdminListPendingProofs)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/proofs/bulk-decision", h.AdminBulkProofDecision)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders/{id}/proof-url", h.AdminGetProofURL)
 		})
 	})
