@@ -79,13 +79,14 @@ type customerPayload struct {
 }
 
 // chargeResponse é o corpo de resposta de POST /internal/v1/charge.
-// Mesmo shape de application.PaymentCharge mas com Provider explícito
-// (o microservice resolveu qual gateway de fato processou).
+// IMPORTANTE: tags JSON precisam bater EXATAMENTE com o que o microservice
+// viralefy_payments emite (vide handlers.go:108 lá). Tag errada =
+// unmarshal silencioso pra zero value = QR code perdido no checkout.
 type chargeResponse struct {
-	Provider    string            `json:"provider"`
-	ExternalRef string            `json:"external_ref"`
-	PaymentURL  string            `json:"payment_url"`
-	Extra       map[string]string `json:"extra,omitempty"`
+	Provider     string            `json:"provider"`
+	ExternalRef  string            `json:"external_ref"`
+	PaymentURL   string            `json:"payment_url"`
+	PaymentExtra map[string]string `json:"payment_extra,omitempty"`
 }
 
 // CreateCharge satisfaz application.PaymentProvider. Envia o input do
@@ -111,7 +112,7 @@ func (c *Client) CreateCharge(ctx context.Context, in application.PaymentChargeI
 	return application.PaymentCharge{
 		ExternalRef: out.ExternalRef,
 		PaymentURL:  out.PaymentURL,
-		Extra:       out.Extra,
+		Extra:       out.PaymentExtra,
 	}, nil
 }
 
@@ -159,11 +160,16 @@ func (c *Client) ListMethods(ctx context.Context, planID, displayCurrency, count
 	if len(q) > 0 {
 		path += "?" + strings.Join(q, "&")
 	}
-	var out []PaymentMethodOption
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+	// Payments emite envelope {"methods":[...]} — não array raw. Unmarshal
+	// pra []PaymentMethodOption direto causa "cannot unmarshal object into
+	// Go value of type []PaymentMethodOption" → 500 no monolito.
+	var env struct {
+		Methods []PaymentMethodOption `json:"methods"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &env); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return env.Methods, nil
 }
 
 // doJSON centraliza serialização/auth/erro. body=nil → GET sem corpo.
