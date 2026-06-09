@@ -312,6 +312,16 @@ func main() {
 	cartAbandonCron := application.NewCartAbandonmentCron(db, emailSender, cfg.SiteURL)
 	cartAbandonCron.Start(context.Background())
 
+	// Stripe reconcile: polling de orders pending Stripe há > 10min, no caso
+	// do webhook não chegar (rede, retry esgotado, edge bloqueado). Tick 5min,
+	// batch 50 — chamadas à Stripe API são cheap (GET /sessions/{id}) e
+	// idempotentes; ConfirmByExternalRef faz no-op se já paid.
+	stripeReconcile := &application.StripeReconcileCron{
+		DB:       db,
+		Receiver: paymentReceiver,
+	}
+	stripeReconcile.Start(context.Background())
+
 	h := &httphandler.Handlers{
 		Plans:           planSvc,
 		Checkout:        checkoutSvc,
