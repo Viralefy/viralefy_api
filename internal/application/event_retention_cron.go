@@ -102,8 +102,10 @@ type retentionTarget struct {
 // nova tabela aqui = adicionar à lista; resto da lógica não muda.
 var eventRetentionTargets = []retentionTarget{
 	{table: "user_events", timeColumn: "occurred_at"},
-	{table: "ab_events", timeColumn: "created_at"},
-	{table: "email_events", timeColumn: "created_at"},
+	// ab_events usa occurred_at (não created_at — schema antigo).
+	{table: "ab_events", timeColumn: "occurred_at"},
+	// email_events usa received_at (webhook hooks da Resend).
+	{table: "email_events", timeColumn: "received_at"},
 	{table: "stripe_events_processed", timeColumn: "received_at"},
 }
 

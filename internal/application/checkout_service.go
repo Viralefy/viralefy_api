@@ -391,7 +391,16 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	// Fluxo novo: cliente pode passar GatewayID escolhido na UI de seleção
 	// de métodos. Validamos que o gateway está ativo e aceita a settlement
 	// currency. Fallback: pickGateway por settlement (back-compat).
-	gw := s.resolveGateway(ctx, in.GatewayID, quote.SettlementCurrency, in.Country)
+	// Pra providers multi-currency (Stripe/Heleket), o cliente escolheu
+	// uma moeda específica de pay-in. Passamos essa como "acceptedCurrency"
+	// alvo da validação — Stripe aceita USD/EUR/BRL/GBP mas NÃO USDT (o
+	// settlement canônico). Sem esse fallback, todo checkout Stripe quebra
+	// com 422 porque o resolveGateway nunca achava match contra USDT.
+	wantedCurrency := quote.SettlementCurrency
+	if in.PayCurrency != "" {
+		wantedCurrency = strings.ToUpper(strings.TrimSpace(in.PayCurrency))
+	}
+	gw := s.resolveGateway(ctx, in.GatewayID, wantedCurrency, in.Country)
 	// Pagamento via gateway exige UM gateway válido. Sem ele, recusa o
 	// checkout antes de criar a order — evita pedido pending órfão e
 	// elimina a porta de entrada que deixava PIX vazar pra internacional
