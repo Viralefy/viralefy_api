@@ -141,6 +141,7 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 	if len(batch) == 0 {
 		return
 	}
+	logger.Info("reconcile tick scanning", "batch_size", len(batch))
 
 	confirmed := 0
 	rateLimited := false
