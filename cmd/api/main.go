@@ -26,6 +26,27 @@ import (
 )
 
 func main() {
+	// Subcomandos de operação que não sobem o servidor HTTP. Mantidos no
+	// mesmo binário pra reusar config/observability/db pool — viralefy-api
+	// vira a "porta única" pro ops e dev.
+	//
+	//   viralefy-api migrate status   — lista migrations + estado
+	//   viralefy-api migrate up       — aplica pendentes (idempotente)
+	//   viralefy-api migrate backfill — marca todas como aplicadas SEM rodar
+	//                                   (uso UMA vez em prod existente)
+	//   viralefy-api seed             — roda Seed() explicitamente (opt-in)
+	//   viralefy-api (sem args)       — sobe o servidor HTTP normal
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "migrate":
+			runMigrateCmd()
+			return
+		case "seed":
+			runSeedCmd()
+			return
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -78,9 +99,14 @@ func main() {
 	if err := postgres.RunMigrations(ctx, db); err != nil {
 		log.Fatal("migrate:", err)
 	}
-	if err := postgres.Seed(ctx, db); err != nil {
-		log.Fatal("seed:", err)
-	}
+	// Seed NÃO roda mais automático em boot — era a causa do incidente
+	// "marketplace items voltam" e "preços que admin editou voltam" (UPSERT
+	// destrutivo a cada deploy). Pra seedar:
+	//
+	//   viralefy-api seed         — roda Seed() (idempotente, DO NOTHING)
+	//
+	// O comando é seguro pra rodar em qualquer momento — não sobrescreve
+	// nada que já existe.
 
 	planRepo := postgres.NewPlanRepo(db)
 	userRepo := postgres.NewUserRepo(db)

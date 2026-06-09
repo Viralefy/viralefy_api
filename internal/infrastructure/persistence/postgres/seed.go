@@ -58,9 +58,11 @@ func seedRoles(ctx context.Context, db *DB) error {
 		}},
 	}
 	for _, r := range roles {
+		// DO NOTHING (não UPDATE): admin pode renomear roles no backoffice sem
+		// que o boot ressuscite o label antigo. Mudança de seed → migration nova.
 		if _, err := db.pool.Exec(ctx, `
 			INSERT INTO roles (code, label) VALUES ($1,$2)
-			ON CONFLICT (code) DO UPDATE SET label = EXCLUDED.label`, r.code, r.label); err != nil {
+			ON CONFLICT (code) DO NOTHING`, r.code, r.label); err != nil {
 			return err
 		}
 		for _, p := range r.perms {
@@ -98,9 +100,11 @@ func seedCategories(ctx context.Context, db *DB) error {
 		{"recuperacao_perfil", "Account recovery", 12},
 	}
 	for _, c := range cats {
+		// DO NOTHING — admin pode renomear/reordenar categorias sem que o
+		// boot ressuscite valores antigos. Mudança de seed real = migration.
 		_, err := db.pool.Exec(ctx, `
 			INSERT INTO categories (code, label, sort_order, active)
-			VALUES ($1,$2,$3,true) ON CONFLICT (code) DO UPDATE SET label=EXCLUDED.label, sort_order=EXCLUDED.sort_order`,
+			VALUES ($1,$2,$3,true) ON CONFLICT (code) DO NOTHING`,
 			c.code, c.label, c.order)
 		if err != nil {
 			return err
@@ -392,9 +396,12 @@ func seedPlanPrices(ctx context.Context, db *DB, planID string, usd float64) err
 	}
 	for _, c := range rates {
 		amount := strconv.FormatFloat(usd*c.rate, 'f', c.decimals, 64)
+		// DO NOTHING — admin pode editar preços individuais sem que o boot
+		// ressuscite o valor calculado pelo seed. Mudança em massa de preço
+		// = migration nova ou comando admin (`viralefy-recalc-prices`).
 		if _, err := db.pool.Exec(ctx, `
 			INSERT INTO plan_prices (plan_id, currency_code, amount) VALUES ($1,$2,$3)
-			ON CONFLICT (plan_id, currency_code) DO UPDATE SET amount = EXCLUDED.amount`,
+			ON CONFLICT (plan_id, currency_code) DO NOTHING`,
 			planID, c.code, amount); err != nil {
 			return err
 		}
