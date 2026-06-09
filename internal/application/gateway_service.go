@@ -26,6 +26,7 @@ var validProviders = map[string]bool{
 	"manual_usdt":   true, // deprecated — usar manual_crypto + accepted_currencies=[USDT]
 	"manual_crypto": true, // genérico multi-network (USDT TRC20/BSC/POL, BTC, LTC, ...)
 	"stripe":        true, // cartões internacionais (Checkout Session API)
+	"abacatepay":    true, // PIX dinâmico BR via processor
 }
 
 // validCurrency aceita qualquer ISO 4217 maiúsculo de 3 letras OU códigos
@@ -72,6 +73,7 @@ var providerDefaultCurrencies = map[string][]string{
 	"manual_crypto": {"USDT"}, // override pra BTC/LTC/etc na criação do gateway
 	"heleket":       {"USDT", "USD", "EUR", "BTC"},
 	"stripe":        {"USD", "EUR", "BRL", "GBP"},
+	"abacatepay":    {"BRL"},
 }
 
 // validateGateway centraliza as regras de provider + accepted_currencies.
