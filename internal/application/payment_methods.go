@@ -170,34 +170,68 @@ func gatewayEligible(g domain.PaymentGateway, displayCurrency, settlementCurrenc
 //
 // Providers single-currency (manual_pix, manual_crypto — cada um já é UMA
 // rota fixa de pagamento) emitem UM card por gateway.
+//
+// 2026-06-09: multi-currency providers (Stripe/Heleket) também passaram a
+// emitir UM card por gateway. Decisão de produto — cliente quer um único
+// método visível, a conversão pra moeda display vai em conversion_note.
+// Regra de seleção da moeda primária: pickPrimaryCurrency().
 func (s *CheckoutService) buildMethodOptions(
 	ctx context.Context, g domain.PaymentGateway, plan *domain.Plan, quote Quote,
 ) []PaymentMethodOption {
 	if len(g.AcceptedCurrencies) == 0 {
 		return nil
 	}
-	provider := strings.ToLower(strings.TrimSpace(g.Provider))
-	if multiCurrencyProviders[provider] {
-		out := make([]PaymentMethodOption, 0, len(g.AcceptedCurrencies))
-		seen := map[string]bool{}
-		for _, raw := range g.AcceptedCurrencies {
-			code := strings.ToUpper(strings.TrimSpace(raw))
-			if code == "" || seen[code] {
-				continue
-			}
-			seen[code] = true
-			if opt, ok := s.buildSingleOption(ctx, g, plan, quote, code); ok {
-				out = append(out, opt)
-			}
-		}
-		return out
+	code := pickPrimaryCurrency(g, quote.DisplayCurrency)
+	if code == "" {
+		return nil
 	}
-	// Single-currency gateways usam a heurística antiga.
-	code := pickChargedCurrency(g.AcceptedCurrencies, quote.SettlementCurrency)
 	if opt, ok := s.buildSingleOption(ctx, g, plan, quote, code); ok {
 		return []PaymentMethodOption{opt}
 	}
 	return nil
+}
+
+// pickPrimaryCurrency espelha a versão em viralefy_payments/.../payment_methods.go.
+// Mantemos duas implementações em sync porque o monolith ainda calcula a lista
+// localmente quando não está em modo microservice.
+//
+//   - Heleket (crypto multi): prefere USDT (stable).
+//   - Stripe (fiat multi): prefere display currency se aceita; senão USD; senão primeira.
+//   - Single-currency: primeira moeda aceita.
+func pickPrimaryCurrency(g domain.PaymentGateway, displayCurrency string) string {
+	display := strings.ToUpper(strings.TrimSpace(displayCurrency))
+	provider := strings.ToLower(strings.TrimSpace(g.Provider))
+	accepted := make([]string, 0, len(g.AcceptedCurrencies))
+	for _, raw := range g.AcceptedCurrencies {
+		code := strings.ToUpper(strings.TrimSpace(raw))
+		if code != "" {
+			accepted = append(accepted, code)
+		}
+	}
+	if len(accepted) == 0 {
+		return ""
+	}
+	contains := func(code string) bool {
+		for _, c := range accepted {
+			if c == code {
+				return true
+			}
+		}
+		return false
+	}
+	if !multiCurrencyProviders[provider] {
+		return accepted[0]
+	}
+	if cryptoProviders[provider] && contains("USDT") {
+		return "USDT"
+	}
+	if display != "" && contains(display) {
+		return display
+	}
+	if contains("USD") {
+		return "USD"
+	}
+	return accepted[0]
 }
 
 // buildSingleOption emite UM PaymentMethodOption pra (gateway, chargedCurrency).
@@ -229,12 +263,10 @@ func (s *CheckoutService) buildSingleOption(
 			settleSymbol = quote.SettlementSymbol
 		}
 	}
-	// Nome da opção: pra gateways multi-currency, anexa a moeda pro card
-	// distinguir as N opções ("Heleket — pay in BTC" vs "Heleket — pay in USDT").
+	// Agora que cada gateway emite UM card único, name é o label puro do
+	// gateway. A moeda cobrada aparece em charged_amount/charged_currency +
+	// conversion_note explica a diferença com display.
 	name := g.Name
-	if multiCurrencyProviders[strings.ToLower(strings.TrimSpace(g.Provider))] {
-		name = g.Name + " — pay in " + chargedCurrency
-	}
 	opt := PaymentMethodOption{
 		GatewayID:          g.ID,
 		Provider:           g.Provider,

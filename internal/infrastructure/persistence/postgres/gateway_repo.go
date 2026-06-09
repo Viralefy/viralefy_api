@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/viralefy/viralefy_api/internal/domain"
 )
 
@@ -104,6 +105,15 @@ func (r *GatewayRepo) Update(ctx context.Context, g domain.PaymentGateway) error
 func (r *GatewayRepo) Delete(ctx context.Context, id string) error {
 	tag, err := r.db.pool.Exec(ctx, `DELETE FROM payment_gateways WHERE id=$1`, id)
 	if err != nil {
+		// Postgres SQLSTATE 23503 = foreign_key_violation. Acontece quando
+		// orders/invoices apontam pro gateway. UX correto = devolver Conflict
+		// pra UI mostrar "tem N pedidos usando, desative em vez de apagar".
+		// Hard delete só faz sentido pra gateways nunca usados; o resto deve
+		// ser desativado via active=false.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return domain.ErrConflict
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
