@@ -16,6 +16,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/notify"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/storage"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/persistence/postgres"
@@ -291,6 +292,7 @@ func main() {
 		APIKeys:         apiKeySvc,
 		Events:          userEventSvc,
 		Email:           emailSender,
+		Storage:         buildStorage(cfg.Storage, logger),
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).
@@ -325,4 +327,24 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	_ = shutdownTracer(shutdownCtx)
+}
+
+// buildStorage instancia o cliente S3 quando config tem endpoint+credenciais.
+// Falha em conectar NÃO derruba o bootstrap — substituímos por NoopStorage
+// e o handler de upload cai no fluxo legacy base64. Permite o API subir em
+// ambientes sem MinIO/R2 cadastrados ainda (HML inicial, tests).
+func buildStorage(cfg config.StorageConfig, logger *slog.Logger) application.ObjectStorage {
+	if !cfg.Enabled() {
+		logger.Warn("object storage disabled (Storage.Endpoint empty) — proofs cair no fluxo base64 legacy")
+		return application.NoopStorage{}
+	}
+	cli, err := storage.New(cfg)
+	if err != nil {
+		logger.Warn("object storage init failed — fallback to NoopStorage",
+			"endpoint", cfg.Endpoint, "error", err.Error())
+		return application.NoopStorage{}
+	}
+	logger.Info("object storage ready",
+		"endpoint", cfg.Endpoint, "bucket_proofs", cfg.BucketProofs)
+	return cli
 }

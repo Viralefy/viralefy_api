@@ -110,6 +110,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Get("/orders", h.MeOrders)
 			r.Get("/orders/{id}", h.MeGetOrder)
 			r.With(mutationLimiter, idem).Post("/orders/{id}/proof", h.MeUploadProof)
+			r.Get("/orders/{id}/proof-url", h.MeGetProofURL)
 			r.Get("/referral", h.MeGetMyReferral)
 			r.Get("/journey", h.MeJourney)
 
@@ -222,6 +223,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/proofs/pending", h.AdminListPendingProofs)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/orders/{id}/proof-url", h.AdminGetProofURL)
 		})
 	})
 

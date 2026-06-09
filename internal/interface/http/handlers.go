@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -66,6 +68,9 @@ type Handlers struct {
 	// admin rejeita o comprovante e o cliente precisa ser avisado pra
 	// reanexar).
 	Email application.EmailSender
+	// Storage S3-compat (MinIO local / Cloudflare R2). Quando disabled
+	// (NoopStorage), o proof upload cai no fluxo legado base64 inline.
+	Storage application.ObjectStorage
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -1258,7 +1263,30 @@ func (h *Handlers) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	// Idempotency check: Stripe re-entrega em 5xx; segunda chamada chega
+	// antes da primeira terminar de processar. Insert FAIL-FAST se o event_id
+	// já está registrado — evita double-fire de email/ticket. Race entre
+	// duas requests do mesmo event_id é resolvida pelo unique constraint
+	// (uma INSERT vence, a outra cai em conflict e ignora).
 	orderID := ev.OrderID()
+	if h.DB != nil {
+		tag, derr := h.DB.Pool().Exec(r.Context(),
+			`INSERT INTO stripe_events_processed (event_id, event_type, order_id)
+			 VALUES ($1, $2, NULLIF($3,''))
+			 ON CONFLICT (event_id) DO NOTHING`,
+			ev.ID, ev.Type, orderID)
+		if derr == nil && tag.RowsAffected() == 0 {
+			// Duplicate event — já processado. ACK 200 pra Stripe parar de tentar.
+			observability.GatewayCallbacksTotal.WithLabelValues("stripe", "duplicate").Inc()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if derr != nil {
+			// Falha de DB no idempotency log — não bloqueia o processamento.
+			// MarkOrderPaid já é idempotente por status guard.
+			logger.Warn("stripe events log insert failed", "error", derr.Error())
+		}
+	}
 	if orderID == "" {
 		observability.GatewayCallbacksTotal.WithLabelValues("stripe", "no_order_id").Inc()
 		logger.Warn("stripe event missing order id", "event_id", ev.ID, "type", ev.Type)
@@ -2239,16 +2267,21 @@ func (h *Handlers) PublicListPaymentMethods(w http.ResponseWriter, r *http.Reque
 }
 
 // MeUploadProof — POST /v1/me/orders/{id}/proof
-// Cliente anexa comprovante de pagamento (PIX, crypto on-chain). O body é
-// JSON pra simplificar (sem multipart): {"file_url": "...", "file_name":
-// "...", "mime_type": "...", "size_bytes": ..., "note": "..."}.
+// Cliente anexa comprovante de pagamento (PIX, crypto on-chain).
 //
-// file_url aceita data: URLs (base64) curtos OU URLs http externas (cliente
-// hospedou em outro serviço — ex.: imgur). Limite de payload é o do
-// MaxBytesReader global (1MB) — telas de PIX/screenshots caem dentro.
+// Dois content-types suportados:
+//   - multipart/form-data — preferido. Backend faz PutObject no MinIO/R2 e
+//     guarda só a key em orders.proof_url. Limite 5MB. MIME whitelist.
+//   - application/json (legacy) — body {"file_url": data:URL ou http URL,
+//     "file_name", "mime_type", "size_bytes", "note"}. Usado quando storage
+//     está disabled (NoopStorage) ou pra hosts terceiros (imgur etc).
 //
 // Sucesso: 200 com a Order atualizada (proof_status=pending). Admin revisa
 // em /backoffice/orders/{id} e clica "Approve" pra disparar mark-as-paid.
+//
+// Tamanho max:
+//   - multipart: 5MB
+//   - JSON: 1MB (limite global de MaxBytesReader)
 func (h *Handlers) MeUploadProof(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromContext(r.Context())
 	if userID == "" {
@@ -2266,11 +2299,16 @@ func (h *Handlers) MeUploadProof(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if o.Status != domain.OrderStatusPending {
-		// Não aceita comprovante em paid/cancelled/failed — evita confusão
-		// sobre "anexei depois e mudou o estado".
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		h.uploadProofMultipart(w, r, userID, orderID)
+		return
+	}
+	// Fluxo legacy JSON: mantém pra hosts terceiros (imgur) ou storage off.
 	var body struct {
 		FileURL   string `json:"file_url"`
 		FileName  string `json:"file_name,omitempty"`
@@ -2402,4 +2440,139 @@ func (h *Handlers) AdminListPendingProofs(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeData(w, http.StatusOK, list)
+}
+
+// allowedProofMIME — whitelist conservadora. Anything outside é rejeitado.
+// Mantém em sync com a accept= do input file no front (image/*,application/pdf).
+var allowedProofMIME = map[string]string{
+	"image/png":       ".png",
+	"image/jpeg":      ".jpg",
+	"image/webp":      ".webp",
+	"image/gif":       ".gif",
+	"application/pdf": ".pdf",
+}
+
+const proofMaxBytes = 5 << 20 // 5 MB
+
+// uploadProofMultipart processa multipart/form-data: field "file" (binary),
+// opcional "note" (text). Faz PutObject no MinIO/R2 com key
+// proofs/{order_id}/{ts}-{rand}{ext} e persiste só essa key em proof_url.
+// Se storage está disabled, retorna 503 — front deve cair no fluxo legacy.
+func (h *Handlers) uploadProofMultipart(w http.ResponseWriter, r *http.Request, userID, orderID string) {
+	if h.Storage == nil {
+		writeError(w, application.ErrStorageDisabled)
+		return
+	}
+	// MaxBytesReader engole o body inteiro até o limite — anti DoS.
+	r.Body = http.MaxBytesReader(w, r.Body, proofMaxBytes+512)
+	if err := r.ParseMultipartForm(proofMaxBytes); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	defer file.Close()
+	if header.Size > proofMaxBytes {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	mime := strings.ToLower(strings.TrimSpace(header.Header.Get("Content-Type")))
+	ext, ok := allowedProofMIME[mime]
+	if !ok {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	note := strings.TrimSpace(r.FormValue("note"))
+	// Key: proofs/{order}/{ts}-{rand}.{ext}. ts dá ordem; rand evita
+	// colisão se cliente subir 2 dentro do mesmo segundo (improvável mas
+	// defensivo). order/ prefix permite listing per-order pra debug.
+	key := "proofs/" + orderID + "/" + nowKeyPrefix() + ext
+	storedKey, err := h.Storage.Put(r.Context(), "proofs", key, file, header.Size, mime)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := h.Orders.SetProof(
+		r.Context(), orderID, storedKey, header.Filename, mime, note, int(header.Size),
+	); err != nil {
+		writeError(w, err)
+		return
+	}
+	updated, err := h.OrderSvc.GetByIDForUser(r.Context(), userID, orderID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, updated)
+}
+
+// nowKeyPrefix gera "20260608T193045-a1b2c3d4" — timestamp UTC + 8 chars
+// random pra unicidade dentro do bucket.
+func nowKeyPrefix() string {
+	ts := time.Now().UTC().Format("20060102T150405")
+	buf := make([]byte, 4)
+	_, _ = io.ReadFull(rand.Reader, buf)
+	return ts + "-" + hex.EncodeToString(buf)
+}
+
+// MeGetProofURL — GET /v1/me/orders/{id}/proof-url
+// Retorna presigned URL pra cliente baixar/visualizar o próprio comprovante.
+// Útil pro user revisar antes de submit, ou pra app mobile renderizar inline.
+func (h *Handlers) MeGetProofURL(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	orderID := chi.URLParam(r, "id")
+	o, err := h.OrderSvc.GetByIDForUser(r.Context(), userID, orderID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	url, err := h.resolveProofURL(r.Context(), o)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// AdminGetProofURL — GET /v1/admin/orders/{id}/proof-url
+// Espelha pro admin — backoffice ProofCard chama isso pra renderizar img/<a>.
+func (h *Handlers) AdminGetProofURL(w http.ResponseWriter, r *http.Request) {
+	orderID := chi.URLParam(r, "id")
+	o, err := h.Orders.GetByID(r.Context(), orderID)
+	if err != nil || o == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	url, err := h.resolveProofURL(r.Context(), o)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// resolveProofURL decide se proof_url é:
+//   - storage key (não começa com http/data) → presign via Storage
+//   - data URL ou http URL (legacy) → retorna direto
+//
+// Mantém retro-compat com proofs uploadados antes do storage rollout.
+func (h *Handlers) resolveProofURL(ctx context.Context, o *domain.Order) (string, error) {
+	if o == nil || o.ProofURL == nil || *o.ProofURL == "" {
+		return "", domain.ErrNotFound
+	}
+	raw := *o.ProofURL
+	if strings.HasPrefix(raw, "data:") || strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw, nil
+	}
+	if h.Storage == nil {
+		return "", application.ErrStorageDisabled
+	}
+	return h.Storage.PresignedGetURL(ctx, "proofs", raw, 5*time.Minute)
 }

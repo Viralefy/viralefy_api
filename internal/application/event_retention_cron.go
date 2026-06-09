@@ -104,6 +104,7 @@ var eventRetentionTargets = []retentionTarget{
 	{table: "user_events", timeColumn: "occurred_at"},
 	{table: "ab_events", timeColumn: "created_at"},
 	{table: "email_events", timeColumn: "created_at"},
+	{table: "stripe_events_processed", timeColumn: "received_at"},
 }
 
 func (c *EventRetentionCron) tick(ctx context.Context) {

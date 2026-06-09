@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -42,7 +43,24 @@ type Config struct {
 	// Webhook genérico (Slack/Discord-compatible) pra notificar admin
 	// quando um ticket de high-touch (recovery/BM/perfil) abre. Vazio = no-op.
 	AdminWebhookURL string
+
+	// Object storage (MinIO local / Cloudflare R2). S3-compat. Endpoint vazio
+	// = storage disabled (handler retorna ErrNotImplemented, sistema cai no
+	// fluxo legado de base64 inline pra back-compat durante a migração).
+	Storage StorageConfig
 }
+
+type StorageConfig struct {
+	Endpoint        string // 127.0.0.1:9000 ou <acct>.r2.cloudflarestorage.com
+	AccessKey       string
+	SecretKey       string
+	Region          string
+	UseSSL          bool
+	BucketProofs    string
+	BucketPublic    string
+}
+
+func (s StorageConfig) Enabled() bool { return s.Endpoint != "" && s.AccessKey != "" }
 
 func Load() (Config, error) {
 	port := getenv("PORT", "8080")
@@ -79,6 +97,16 @@ func Load() (Config, error) {
 
 		TurnstileSecretKey: getenv("TURNSTILE_SECRET_KEY", ""),
 		AdminWebhookURL:    getenv("ADMIN_WEBHOOK_URL", ""),
+
+		Storage: StorageConfig{
+			Endpoint:     strings.TrimPrefix(strings.TrimPrefix(getenv("STORAGE_ENDPOINT", ""), "https://"), "http://"),
+			AccessKey:    getenv("STORAGE_ACCESS_KEY", ""),
+			SecretKey:    getenv("STORAGE_SECRET_KEY", ""),
+			Region:       getenv("STORAGE_REGION", "us-east-1"),
+			UseSSL:       getenv("STORAGE_USE_SSL", "false") == "true",
+			BucketProofs: getenv("STORAGE_BUCKET_PROOFS", "viralefy-proofs"),
+			BucketPublic: getenv("STORAGE_BUCKET_PUBLIC", "viralefy-public"),
+		},
 	}
 	if len(cfg.JWTSecret) < 16 {
 		return cfg, fmt.Errorf("JWT_SECRET must be at least 16 characters")
