@@ -150,6 +150,12 @@ func (s *InvoiceService) AdminList(ctx context.Context, statusFilter string) ([]
 	return s.invoices.ListAll(ctx, statusFilter)
 }
 
+// AdminListView devolve invoices + user hidratado (nome/email). Usado pelo
+// backoffice em /admin/invoices pra renderizar o owner sem N+1.
+func (s *InvoiceService) AdminListView(ctx context.Context, statusFilter string) ([]domain.InvoiceView, error) {
+	return s.invoices.ListAllView(ctx, statusFilter)
+}
+
 // AdminMarkPaid: marca invoice como paga e credita o saldo (idempotente).
 // Útil enquanto webhook não está plugado (admin confirma manualmente).
 func (s *InvoiceService) AdminMarkPaid(ctx context.Context, id string) (*domain.Invoice, error) {

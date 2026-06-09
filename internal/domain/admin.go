@@ -22,4 +22,9 @@ type Admin struct {
 type AdminRepository interface {
 	GetByEmail(ctx context.Context, email string) (*Admin, error)
 	GetByID(ctx context.Context, id string) (*Admin, error)
+	ListAll(ctx context.Context) ([]Admin, error)
+	Create(ctx context.Context, a Admin) error
+	UpdateRole(ctx context.Context, id, role string) error
+	UpdateRequires2FA(ctx context.Context, id string, requires bool) error
+	Delete(ctx context.Context, id string) error
 }

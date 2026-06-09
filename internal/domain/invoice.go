@@ -35,12 +35,22 @@ type Invoice struct {
 	PaidAt             *time.Time        `json:"paid_at,omitempty"`
 }
 
+// InvoiceView é Invoice + dados do usuário hidratados via JOIN. Usado
+// pelo backoffice em /v1/admin/invoices pra exibir nome/email do comprador
+// sem um round-trip extra de GetByID.
+type InvoiceView struct {
+	Invoice
+	UserName  string `json:"user_name,omitempty"`
+	UserEmail string `json:"user_email,omitempty"`
+}
+
 type InvoiceRepository interface {
 	Create(ctx context.Context, inv Invoice) error
 	GetByID(ctx context.Context, id string) (*Invoice, error)
 	GetByExternalRef(ctx context.Context, externalRef string) (*Invoice, error)
 	ListByUser(ctx context.Context, userID string) ([]Invoice, error)
 	ListAll(ctx context.Context, statusFilter string) ([]Invoice, error)
+	ListAllView(ctx context.Context, statusFilter string) ([]InvoiceView, error)
 	UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error
 	MarkPaid(ctx context.Context, id string) error
 	UpdateStatus(ctx context.Context, id string, status InvoiceStatus) error

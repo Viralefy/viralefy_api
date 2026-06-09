@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/viralefy/viralefy_api/internal/domain"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -275,6 +276,100 @@ func (s *AuthService) Roles(ctx context.Context) ([]domain.Role, error) {
 // do principal autenticado.
 func (s *AuthService) GetAdminByID(ctx context.Context, id string) (*domain.Admin, error) {
 	return s.admins.GetByID(ctx, id)
+}
+
+// AdminListAdmins devolve todos os admins p/ a UI de gestão (RBAC). Inclui
+// password_hash (que o handler NÃO deve emitir) — caller faz o stripping.
+func (s *AuthService) AdminListAdmins(ctx context.Context) ([]domain.Admin, error) {
+	return s.admins.ListAll(ctx)
+}
+
+// AdminCreate cria um novo admin com role escolhido. Senha é gerada e
+// devolvida UMA vez ao caller (admin promotor anota e envia ao novo admin).
+// 2FA fica obrigatório por default (requires_2fa = true).
+func (s *AuthService) AdminCreate(ctx context.Context, email, name, role string) (*domain.Admin, string, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	name = strings.TrimSpace(name)
+	role = strings.TrimSpace(role)
+	if email == "" || name == "" || role == "" {
+		return nil, "", domain.ErrInvalidInput
+	}
+	if !validAdminRole(role) {
+		return nil, "", domain.ErrInvalidInput
+	}
+	if existing, _ := s.admins.GetByEmail(ctx, email); existing != nil {
+		return nil, "", domain.ErrConflict
+	}
+	pwd := GeneratePassword()
+	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), 12)
+	if err != nil {
+		return nil, "", err
+	}
+	a := domain.Admin{
+		ID:            uuid.New().String(),
+		Email:         email,
+		Name:          name,
+		Role:          role,
+		PasswordHash:  string(hash),
+		RequiresTwoFA: true,
+	}
+	if err := s.admins.Create(ctx, a); err != nil {
+		return nil, "", err
+	}
+	return &a, pwd, nil
+}
+
+// AdminUpdateRole troca o role de um admin. Bloqueia troca em quem é
+// superadmin se o caller não for superadmin (garante que admin com
+// permissão admins:manage mas sem role superadmin não consegue rebaixar
+// um superadmin nem se auto-promover).
+func (s *AuthService) AdminUpdateRole(ctx context.Context, callerPrincipal domain.Principal, targetID, newRole string) error {
+	newRole = strings.TrimSpace(newRole)
+	if !validAdminRole(newRole) {
+		return domain.ErrInvalidInput
+	}
+	target, err := s.admins.GetByID(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	// Só superadmin pode mexer em outro superadmin ou criar um novo.
+	if (target.Role == domain.RoleSuperadmin || newRole == domain.RoleSuperadmin) &&
+		callerPrincipal.Role != domain.RoleSuperadmin {
+		return domain.ErrForbidden
+	}
+	// Não permite admin atualizar o próprio role (vetor de auto-promoção).
+	if callerPrincipal.AdminID == targetID && callerPrincipal.Role != domain.RoleSuperadmin {
+		return domain.ErrForbidden
+	}
+	return s.admins.UpdateRole(ctx, targetID, newRole)
+}
+
+// AdminDelete remove um admin. Mesma proteção do UpdateRole: só superadmin
+// remove outro superadmin; admin não consegue se auto-deletar.
+func (s *AuthService) AdminDelete(ctx context.Context, callerPrincipal domain.Principal, targetID string) error {
+	if callerPrincipal.AdminID == targetID {
+		return domain.ErrForbidden
+	}
+	target, err := s.admins.GetByID(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	if target.Role == domain.RoleSuperadmin && callerPrincipal.Role != domain.RoleSuperadmin {
+		return domain.ErrForbidden
+	}
+	return s.admins.Delete(ctx, targetID)
+}
+
+// validAdminRole rejeita strings que não batem com nenhuma role na tabela
+// roles. Caller deve garantir consistência (PK em roles.code + FK opcional).
+// Lista hard-coded espelha os 4 seedados em migration 026; novas roles
+// precisam ser adicionadas aqui também (defesa em profundidade).
+func validAdminRole(role string) bool {
+	switch role {
+	case domain.RoleSuperadmin, "manager", "support", "viewer":
+		return true
+	}
+	return false
 }
 
 func deriveKID(priv *rsa.PrivateKey) string {

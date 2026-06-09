@@ -111,6 +111,55 @@ func (r *InvoiceRepo) UpdateStatus(ctx context.Context, id string, status domain
 	return nil
 }
 
+// ListAllView devolve invoices + user_name/user_email via LEFT JOIN. Usado
+// pelo backoffice (`/admin/invoices`) pra evitar N+1 quando precisa exibir
+// nome do comprador. statusFilter "" = todos os status.
+func (r *InvoiceRepo) ListAllView(ctx context.Context, statusFilter string) ([]domain.InvoiceView, error) {
+	const sel = `SELECT ` + invoiceCols + `,
+		COALESCE(u.name, ''), COALESCE(u.email, '')
+		FROM invoices i_alias` // placeholder; real query rebuilds with prefix below
+	_ = sel                    // unused — kept for grep continuity
+	var rows pgx.Rows
+	var err error
+	query := `SELECT
+		i.id, i.user_id, i.amount_cents, i.currency,
+		i.display_currency, i.display_amount, i.settlement_currency, i.settlement_amount,
+		i.status, i.gateway_id, i.external_ref, i.payment_url, i.payment_extra,
+		i.created_at, i.updated_at, i.paid_at,
+		COALESCE(u.name, ''), COALESCE(u.email, '')
+		FROM invoices i
+		LEFT JOIN users u ON u.id = i.user_id`
+	if statusFilter != "" {
+		query += ` WHERE i.status=$1 ORDER BY i.created_at DESC LIMIT 500`
+		rows, err = r.db.pool.Query(ctx, query, statusFilter)
+	} else {
+		query += ` ORDER BY i.created_at DESC LIMIT 500`
+		rows, err = r.db.pool.Query(ctx, query)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.InvoiceView{}
+	for rows.Next() {
+		var v domain.InvoiceView
+		var extra []byte
+		if err := rows.Scan(&v.ID, &v.UserID, &v.AmountCents, &v.Currency,
+			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
+			&v.Status, &v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
+			&v.CreatedAt, &v.UpdatedAt, &v.PaidAt,
+			&v.UserName, &v.UserEmail); err != nil {
+			return nil, err
+		}
+		v.PaymentExtra = map[string]string{}
+		if len(extra) > 0 {
+			_ = json.Unmarshal(extra, &v.PaymentExtra)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func scanInvoices(rows pgx.Rows) ([]domain.Invoice, error) {
 	list := []domain.Invoice{}
 	for rows.Next() {

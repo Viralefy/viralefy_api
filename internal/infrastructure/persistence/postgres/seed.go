@@ -90,11 +90,12 @@ func seedCategories(ctx context.Context, db *DB) error {
 		{"visualizacoes_instagram", "Instagram views", 9},
 		{"visualizacoes_tiktok", "TikTok views", 10},
 		{"servicos", "Premium services", 11},
-		// 4 categorias da fase marketplace + recovery.
+		// Marketplace de recovery — única categoria não-engajamento mantida.
+		// Categorias bms_facebook/perfis_redes/emails_validados foram REMOVIDAS
+		// do catálogo (decisão de produto 2026-06-09). O ON CONFLICT do INSERT
+		// acima não desativa rows existentes — limpeza em prod via SQL
+		// (DELETE/UPDATE active=false) no migration ou backoffice.
 		{"recuperacao_perfil", "Account recovery", 12},
-		{"bms_facebook", "Facebook Business Managers", 13},
-		{"perfis_redes", "Aged social profiles", 14},
-		{"emails_validados", "Validated email packs", 15},
 	}
 	for _, c := range cats {
 		_, err := db.pool.Exec(ctx, `
@@ -314,30 +315,10 @@ func seedPlans(ctx context.Context, db *DB) error {
 		// abre ticket automático (handler em application/order).
 		{"Account recovery", "Full account recovery — Instagram/TikTok suspended, hacked or restricted", "recuperacao_perfil", "instagram", "profile", 1, 10000, 1},
 
-		// ===== MARKETPLACE — Facebook BMs (target_type=publication; qty=tier) =====
-		// Quantidade representa o "limite de gasto diário" do BM em USD.
-		{"BM Trial — daily limit $50",  "Brand-new BM, daily spend cap $50.  Use to warm pixels.", "bms_facebook", "facebook", "publication", 50,   40,  1},
-		{"BM Starter — daily limit $250", "Verified BM, daily cap $250, 7+ days aged.",            "bms_facebook", "facebook", "publication", 250,  90,  2},
-		{"BM Pro — daily limit $1k",    "Verified BM, daily cap $1k, 30+ days aged.",              "bms_facebook", "facebook", "publication", 1000, 200, 3},
-		{"BM Premium — daily limit $5k", "Verified BM, daily cap $5k, 90+ days aged + spend history.", "bms_facebook", "facebook", "publication", 5000, 450, 4},
-
-		// ===== MARKETPLACE — Aged social profiles (Instagram / TikTok) ===========
-		// Quantidade = seguidores reais do perfil entregue.
-		{"Aged Instagram profile — 1k real followers",  "Instagram profile, 1k followers, 30+ days aged, full handover.", "perfis_redes", "instagram", "profile", 1000,  30,  1},
-		{"Aged Instagram profile — 5k real followers",  "Instagram profile, 5k followers, 60+ days aged, full handover.", "perfis_redes", "instagram", "profile", 5000,  90,  2},
-		{"Aged Instagram profile — 10k real followers", "Instagram profile, 10k followers, 90+ days aged, full handover.", "perfis_redes", "instagram", "profile", 10000, 150, 3},
-		{"Aged TikTok profile — 1k real followers",    "TikTok profile, 1k followers, 30+ days aged, full handover.",    "perfis_redes", "tiktok", "profile", 1000,  35,  10},
-		{"Aged TikTok profile — 5k real followers",    "TikTok profile, 5k followers, 60+ days aged, full handover.",    "perfis_redes", "tiktok", "profile", 5000,  110, 11},
-		{"Aged TikTok profile — 10k real followers",   "TikTok profile, 10k followers, 90+ days aged, full handover.",   "perfis_redes", "tiktok", "profile", 10000, 180, 12},
-		{"Aged Instagram profile — 50k real followers", "Instagram profile, 50k followers, 180+ days aged, full handover.","perfis_redes", "instagram", "profile", 50000, 300, 4},
-
-		// ===== MARKETPLACE — Validated email packs (qty=quantos emails) ==========
-		{"100 validated emails",   "Pack of 100 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 100,   5,  1},
-		{"250 validated emails",   "Pack of 250 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 250,   11, 2},
-		{"500 validated emails",   "Pack of 500 validated, deliverable email addresses.",   "emails_validados", "instagram", "publication", 500,   20, 3},
-		{"1,000 validated emails", "Pack of 1,000 validated, deliverable email addresses.", "emails_validados", "instagram", "publication", 1000,  35, 4},
-		{"5,000 validated emails", "Pack of 5,000 validated, deliverable email addresses.", "emails_validados", "instagram", "publication", 5000,  150, 5},
-		{"10,000 validated emails","Pack of 10,000 validated, deliverable email addresses.","emails_validados", "instagram", "publication", 10000, 280, 6},
+		// REMOVIDOS (2026-06-09): planos de marketplace de BMs do Facebook,
+		// perfis envelhecidos e packs de e-mails validados. Decisão de produto.
+		// A limpeza física dos rows em prod é feita pela migration 038
+		// (ver migrations/038_drop_marketplace_items.up.sql).
 	}
 	for _, p := range plans {
 		var existingID string

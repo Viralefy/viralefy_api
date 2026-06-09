@@ -595,6 +595,148 @@ func (h *Handlers) AdminListRoles(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, roles)
 }
 
+// adminPublicView é o shape devolvido aos handlers /v1/admin/admins —
+// password_hash NUNCA é incluído (nem em logs nem em wire).
+type adminPublicView struct {
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	Role          string    `json:"role"`
+	RequiresTwoFA bool      `json:"requires_2fa"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func toAdminView(a domain.Admin) adminPublicView {
+	return adminPublicView{
+		ID: a.ID, Email: a.Email, Name: a.Name, Role: a.Role,
+		RequiresTwoFA: a.RequiresTwoFA, CreatedAt: a.CreatedAt,
+	}
+}
+
+// AdminListAdmins — GET /v1/admin/admins
+// Lista todos os admins do sistema. Gated por PermAdminsManage no router.
+func (h *Handlers) AdminListAdmins(w http.ResponseWriter, r *http.Request) {
+	list, err := h.Auth.AdminListAdmins(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]adminPublicView, 0, len(list))
+	for _, a := range list {
+		out = append(out, toAdminView(a))
+	}
+	writeData(w, http.StatusOK, out)
+}
+
+// AdminCreateAdmin — POST /v1/admin/admins
+// Body: { email, name, role }. Devolve { admin, generated_password } —
+// senha gerada UMA vez (admin promotor anota e entrega).
+func (h *Handlers) AdminCreateAdmin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	// Só superadmin cria outro superadmin (defesa em profundidade — a
+	// camada de service também valida).
+	caller, _ := principalFromContext(r.Context())
+	if body.Role == domain.RoleSuperadmin && caller.Role != domain.RoleSuperadmin {
+		writeError(w, domain.ErrForbidden)
+		return
+	}
+	created, pwd, err := h.Auth.AdminCreate(r.Context(), body.Email, body.Name, body.Role)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if h.Audit != nil {
+		h.Audit.Log(r.Context(), application.AuditEntry{
+			ActorType:  "admin",
+			ActorID:    caller.AdminID,
+			Action:     "admin.create",
+			TargetType: "admin",
+			TargetID:   created.ID,
+			Metadata: map[string]any{
+				"email": created.Email,
+				"role":  created.Role,
+			},
+		})
+	}
+	writeData(w, http.StatusCreated, map[string]any{
+		"admin":              toAdminView(*created),
+		"generated_password": pwd,
+	})
+}
+
+// AdminUpdateAdmin — PUT /v1/admin/admins/{id}
+// Body: { role }. Só atualiza role (email/name não mudam — admin deleta
+// e re-cria se precisa renomear).
+func (h *Handlers) AdminUpdateAdmin(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	caller, _ := principalFromContext(r.Context())
+	if err := h.Auth.AdminUpdateRole(r.Context(), caller, id, body.Role); err != nil {
+		writeError(w, err)
+		return
+	}
+	if h.Audit != nil {
+		h.Audit.Log(r.Context(), application.AuditEntry{
+			ActorType:  "admin",
+			ActorID:    caller.AdminID,
+			Action:     "admin.update_role",
+			TargetType: "admin",
+			TargetID:   id,
+			Metadata:   map[string]any{"new_role": body.Role},
+		})
+	}
+	updated, err := h.Auth.GetAdminByID(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, toAdminView(*updated))
+}
+
+// AdminDeleteAdmin — DELETE /v1/admin/admins/{id}
+// Hard delete. Self-delete + delete de superadmin por não-superadmin são
+// bloqueados pelo service.
+func (h *Handlers) AdminDeleteAdmin(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	caller, _ := principalFromContext(r.Context())
+	if err := h.Auth.AdminDelete(r.Context(), caller, id); err != nil {
+		writeError(w, err)
+		return
+	}
+	if h.Audit != nil {
+		h.Audit.Log(r.Context(), application.AuditEntry{
+			ActorType:  "admin",
+			ActorID:    caller.AdminID,
+			Action:     "admin.delete",
+			TargetType: "admin",
+			TargetID:   id,
+		})
+	}
+	writeData(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func (h *Handlers) AdminLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email          string `json:"email"`
@@ -1164,7 +1306,7 @@ func (h *Handlers) MeListInvoices(w http.ResponseWriter, r *http.Request) {
 // --- Admin: invoices --- //
 
 func (h *Handlers) AdminListInvoices(w http.ResponseWriter, r *http.Request) {
-	list, err := h.Invoices.AdminList(r.Context(), r.URL.Query().Get("status"))
+	list, err := h.Invoices.AdminListView(r.Context(), r.URL.Query().Get("status"))
 	if err != nil {
 		writeError(w, err)
 		return

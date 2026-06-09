@@ -174,6 +174,14 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/me/2fa/disable", h.AdminDisable2FA)
 			r.With(RequirePermission(domain.PermAdminsManage)).Get("/roles", h.AdminListRoles)
 
+			// Gestão de admins (RBAC manager). Único admins:manage que
+			// modifica tabela admins. Self-delete + cross-role promotion
+			// são bloqueados pelo service (defense-in-depth).
+			r.With(RequirePermission(domain.PermAdminsManage)).Get("/admins", h.AdminListAdmins)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/admins", h.AdminCreateAdmin)
+			r.With(RequirePermission(domain.PermAdminsManage)).Put("/admins/{id}", h.AdminUpdateAdmin)
+			r.With(RequirePermission(domain.PermAdminsManage)).Delete("/admins/{id}", h.AdminDeleteAdmin)
+
 			r.With(RequirePermission(domain.PermPlansRead)).Get("/plans", h.AdminListPlans)
 			r.With(RequirePermission(domain.PermPlansWrite)).Post("/plans", h.AdminCreatePlan)
 			r.With(RequirePermission(domain.PermPlansWrite)).Put("/plans/{id}", h.AdminUpdatePlan)
