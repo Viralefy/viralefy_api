@@ -84,6 +84,8 @@ func (s *InvoiceService) Create(ctx context.Context, in CreateInvoiceInput) (*do
 		if p, ok := s.payments.Get(gw.Provider); ok {
 			charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
 				OrderID:     inv.ID,
+				GatewayID:   gw.ID,
+				Provider:    gw.Provider,
 				Description: "Viralefy credits top-up",
 				Amount:      quote.SettlementAmount,
 				Currency:    quote.SettlementCurrency,

@@ -434,6 +434,8 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 	if p, ok := s.payments.Get(gw.Provider); ok {
 		charge, perr := p.CreateCharge(ctx, PaymentChargeInput{
 			OrderID:     orderID,
+			GatewayID:   gw.ID,
+			Provider:    gw.Provider,
 			Description: plan.Name,
 			Amount:      chargeAmount,
 			Currency:    chargeCurrency,

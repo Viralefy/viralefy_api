@@ -70,6 +70,12 @@ type Config struct {
 	PaymentsInternalURL  string
 	SenderInternalURL    string
 	InternalSharedSecret string
+
+	// TelegramAdminChatID — chat_id (numérico em string) ou @canalhandle do
+	// canal interno do admin. Usado pelo PaymentReceiver pra disparar
+	// notificação via viralefy_sender (channel="telegram") em cada paid
+	// order. Vazio = não dispara (HML/POC sem bot configurado ainda).
+	TelegramAdminChatID string
 }
 
 type StorageConfig struct {
@@ -123,6 +129,7 @@ func Load() (Config, error) {
 		PaymentsInternalURL:  strings.TrimRight(getenv("PAYMENTS_INTERNAL_URL", ""), "/"),
 		SenderInternalURL:    strings.TrimRight(getenv("SENDER_INTERNAL_URL", ""), "/"),
 		InternalSharedSecret: getenv("INTERNAL_SHARED_SECRET", ""),
+		TelegramAdminChatID:  strings.TrimSpace(getenv("TELEGRAM_ADMIN_CHAT_ID", "")),
 
 		Storage: StorageConfig{
 			Endpoint:     strings.TrimPrefix(strings.TrimPrefix(getenv("STORAGE_ENDPOINT", ""), "https://"), "http://"),

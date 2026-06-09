@@ -32,6 +32,19 @@ type AdminNotifier interface {
 	Enabled() bool
 }
 
+// TelegramNotifier é a porta de saída pra notificações via Telegram bot.
+// Implementação concreta em infrastructure/external/senderclient (chama
+// viralefy_sender que renderiza template + dispara via Bot API). Vazio
+// no modo legacy (sem microservice de sender) — PaymentReceiver no-op.
+//
+// Handle é "@username" (resolvido pelo sender via telegram_chats) ou
+// chat_id numérico em string. Template é o nome registrado no sender
+// (ex.: "checkout_paid_admin", "checkout_paid_customer"). Vars alimenta
+// a substituição do template.
+type TelegramNotifier interface {
+	SendTelegram(ctx context.Context, handle, template string, vars map[string]string) error
+}
+
 // PaymentReceiver é o ponto único de entrada para confirmações de pagamento
 // (webhook ou ação manual do admin). Idempotente: chamadas repetidas para
 // o mesmo external_ref / id já pago são no-op.
@@ -46,12 +59,25 @@ type PaymentReceiver struct {
 	notifier   AdminNotifier
 	siteURL    string
 	referrals  *ReferralService
+	// telegram + adminTelegramChat — opt-in via SetTelegram (PHASE-8 Wave 3).
+	// Vazio = sem notificação Telegram (modo legado / HML sem bot ainda).
+	telegram         TelegramNotifier
+	adminTelegramTo  string
 }
 
 // SetReferrals opt-in pra payout hook (GrantOnFirstPaidOrder após order
 // vira paid). Best-effort: erro no payout não impede transição de status.
 func (r *PaymentReceiver) SetReferrals(svc *ReferralService) {
 	r.referrals = svc
+}
+
+// SetTelegram opt-in pra notificação via Telegram bot quando um pedido
+// vira paid (Wave 3). adminChat é o chat_id/handle do canal interno;
+// pode vir vazio (= não notifica admin, mas ainda dispara pro cliente se
+// ele tiver telegram cadastrado). Notifier nil = no-op completo.
+func (r *PaymentReceiver) SetTelegram(notifier TelegramNotifier, adminChat string) {
+	r.telegram = notifier
+	r.adminTelegramTo = strings.TrimSpace(adminChat)
 }
 
 func NewPaymentReceiver(
@@ -179,6 +205,69 @@ func (r *PaymentReceiver) onOrderPaid(ctx context.Context, ord *domain.Order) {
 	r.maybeOpenTicket(ctx, ord, plan)
 	r.sendConfirmationEmail(ctx, ord, plan)
 	r.notifyAdmin(ctx, ord, plan)
+	r.telegramBroadcast(ctx, ord, plan)
+}
+
+// telegramBroadcast dispara as notificações Telegram pós-paid:
+//   - admin: template "checkout_paid_admin" pro chat configurado em
+//     cfg.TelegramAdminChatID. Só dispara se TelegramNotifier setado E
+//     adminChat preenchido.
+//   - cliente: template "checkout_paid_customer" se user.Telegram != "".
+//
+// Best-effort: erro em qualquer step só vira warn no log; não bloqueia o
+// MarkOrderPaid (que já voltou ack pro webhook caller).
+func (r *PaymentReceiver) telegramBroadcast(ctx context.Context, ord *domain.Order, plan *domain.Plan) {
+	if r.telegram == nil {
+		return
+	}
+	vars := r.checkoutPaidVars(ctx, ord, plan)
+	if r.adminTelegramTo != "" {
+		if err := r.telegram.SendTelegram(ctx, r.adminTelegramTo, "checkout_paid_admin", vars); err != nil {
+			observability.FromContext(ctx).Warn("telegram admin notify failed",
+				"order_id", ord.ID, "error", err.Error())
+		}
+	}
+	// Cliente opcional: precisa do user.Telegram preenchido (cadastrado no
+	// register). Sem telegram = só email cobre.
+	if r.users != nil {
+		if u, err := r.users.GetByID(ctx, ord.UserID); err == nil && u != nil && u.Telegram != "" {
+			if err := r.telegram.SendTelegram(ctx, u.Telegram, "checkout_paid_customer", vars); err != nil {
+				observability.FromContext(ctx).Warn("telegram customer notify failed",
+					"order_id", ord.ID, "error", err.Error())
+			}
+		}
+	}
+}
+
+// checkoutPaidVars monta o map de substituição usado nos templates
+// checkout_paid_* (email/telegram admin/cliente). Centralizado pra
+// garantir consistência entre canais (nomes idênticos no template).
+func (r *PaymentReceiver) checkoutPaidVars(ctx context.Context, ord *domain.Order, plan *domain.Plan) map[string]string {
+	vars := map[string]string{
+		"plan_name":           plan.Name,
+		"settlement_amount":   ord.SettlementAmount,
+		"settlement_currency": ord.SettlementCurrency,
+		"display_amount":      ord.DisplayAmount,
+		"display_currency":    ord.DisplayCurrency,
+		"order_short_id":      shortID(ord.ID),
+		"order_id":            ord.ID,
+		"site_url":            strings.TrimRight(r.siteURL, "/"),
+		"category":            plan.Category,
+	}
+	if r.users != nil {
+		if u, err := r.users.GetByID(ctx, ord.UserID); err == nil && u != nil {
+			vars["name"] = u.Name
+			vars["customer_email"] = u.Email
+		}
+	}
+	return vars
+}
+
+func shortID(id string) string {
+	if len(id) < 8 {
+		return id
+	}
+	return id[:8]
 }
 
 // maybeOpenTicket abre ticket de suporte automaticamente para categorias
@@ -280,6 +369,19 @@ func (r *PaymentReceiver) sendConfirmationEmail(ctx context.Context, ord *domain
 	}
 	u, err := r.users.GetByID(ctx, ord.UserID)
 	if err != nil || u == nil || u.Email == "" {
+		return
+	}
+
+	// PHASE-8 Wave 3: quando o EmailSender é o viralefy_sender (via
+	// senderclient.Client), ele implementa TemplatedEmailer e renderiza o
+	// template "checkout_paid" centralmente. Caímos no template path; só o
+	// fallback legacy (SMTP/Resend direto) continua com HTML/Text hand-written.
+	if tmpl, ok := r.email.(TemplatedEmailer); ok {
+		vars := r.checkoutPaidVars(ctx, ord, plan)
+		if err := tmpl.SendTemplate(ctx, u.Email, "checkout_paid", vars); err != nil {
+			observability.FromContext(ctx).Warn("checkout_paid template email failed",
+				"order_id", ord.ID, "error", err.Error())
+		}
 		return
 	}
 

@@ -64,6 +64,8 @@ func (*Client) Provider() string { return "remote" }
 // microservice serializar/deserializar sem repackaging.
 type chargeRequest struct {
 	OrderID     string            `json:"order_id"`
+	GatewayID   string            `json:"gateway_id,omitempty"`
+	Provider    string            `json:"provider,omitempty"`
 	Description string            `json:"description"`
 	Amount      string            `json:"amount"`
 	Currency    string            `json:"currency"`
@@ -91,6 +93,8 @@ type chargeResponse struct {
 func (c *Client) CreateCharge(ctx context.Context, in application.PaymentChargeInput) (application.PaymentCharge, error) {
 	body := chargeRequest{
 		OrderID:     in.OrderID,
+		GatewayID:   in.GatewayID,
+		Provider:    in.Provider,
 		Description: in.Description,
 		Amount:      in.Amount,
 		Currency:    in.Currency,

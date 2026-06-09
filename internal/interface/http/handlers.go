@@ -18,6 +18,7 @@ import (
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/email"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/paymentsclient"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/persistence/postgres"
@@ -78,6 +79,11 @@ type Handlers struct {
 	// UserTwoFA — espelho pra usuários. Opcional pro user (Login não
 	// bloqueia se não enrolled). Nag controlado pelo prompt logic.
 	UserTwoFA *application.TwoFAService
+	// MethodsRemote — quando setado (modo microservice PHASE-8 Wave 3),
+	// PublicListPaymentMethods pula h.Checkout.ListPaymentMethods e proxy
+	// direto pro viralefy_payments via paymentsclient. Nil = modo legado
+	// (CheckoutService resolve in-memory).
+	MethodsRemote *paymentsclient.Client
 }
 
 // clientIP extrai o IP do cliente do request, respeitando X-Forwarded-For
@@ -2267,6 +2273,24 @@ func (h *Handlers) PublicListPaymentMethods(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	q := r.URL.Query()
+	// PHASE-8 Wave 3: quando o microserviço viralefy_payments está plugado
+	// (MethodsRemote != nil), proxy direto via HTTP. Shape de saída idêntica
+	// — o paymentsclient devolve o mesmo PaymentMethodOption serializado.
+	// Modo legado (MethodsRemote==nil): cai no Checkout.ListPaymentMethods
+	// in-memory.
+	if h.MethodsRemote != nil {
+		methods, err := h.MethodsRemote.ListMethods(
+			r.Context(), planID,
+			q.Get("display_currency"),
+			q.Get("country"),
+		)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeData(w, http.StatusOK, methods)
+		return
+	}
 	methods, err := h.Checkout.ListPaymentMethods(
 		r.Context(), planID,
 		q.Get("display_currency"),

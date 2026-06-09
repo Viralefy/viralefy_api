@@ -16,6 +16,8 @@ import (
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/jwtkeys"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/notify"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/payment"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/paymentsclient"
+	"github.com/viralefy/viralefy_api/internal/infrastructure/external/senderclient"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/storage"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/external/turnstile"
 	"github.com/viralefy/viralefy_api/internal/infrastructure/observability"
@@ -102,27 +104,57 @@ func main() {
 	creditRepo := postgres.NewCreditRepo(db)
 	invoiceRepo := postgres.NewInvoiceRepo(db)
 
-	emailSender := email.New(email.Config{
-		Provider:       cfg.EmailProvider,
-		Addr:           cfg.SMTPAddr,
-		User:           cfg.SMTPUser,
-		Pass:           cfg.SMTPPass,
-		From:           cfg.SMTPFrom,
-		FromName:       cfg.SMTPFromName,
-		ResendAPIKey:   cfg.ResendAPIKey,
-		ResendFrom:     cfg.ResendFrom,
-		ResendFromName: cfg.ResendFromName,
-		ResendBaseURL:  cfg.ResendBaseURL,
-	})
+	// PHASE-8 Wave 3: quando SENDER_INTERNAL_URL setado, troca o
+	// emailSender concreto pelo senderclient (HTTP → viralefy_sender). O
+	// senderclient implementa application.EmailSender (Send passthrough) E
+	// application.TemplatedEmailer (SendTemplate pra checkout_paid).
+	// Vazio = legacy SMTP/Resend direto.
+	var emailSender application.EmailSender
+	var senderRemote *senderclient.Client
+	if cfg.SenderInternalURL != "" {
+		senderRemote = senderclient.New(cfg.SenderInternalURL, cfg.InternalSharedSecret)
+		emailSender = senderRemote
+		logger.Info("email sender: remote viralefy_sender",
+			"url", cfg.SenderInternalURL)
+	} else {
+		emailSender = email.New(email.Config{
+			Provider:       cfg.EmailProvider,
+			Addr:           cfg.SMTPAddr,
+			User:           cfg.SMTPUser,
+			Pass:           cfg.SMTPPass,
+			From:           cfg.SMTPFrom,
+			FromName:       cfg.SMTPFromName,
+			ResendAPIKey:   cfg.ResendAPIKey,
+			ResendFrom:     cfg.ResendFrom,
+			ResendFromName: cfg.ResendFromName,
+			ResendBaseURL:  cfg.ResendBaseURL,
+		})
+		logger.Info("email sender: legacy (SMTP/Resend direto)")
+	}
 
-	payments := application.NewPaymentRegistry(
-		payment.NewWoovi(),
-		payment.NewHeleket(),
-		payment.NewManualPIX(),
-		payment.NewManualUSDT(),
-		payment.NewManualCrypto(),
-		payment.NewStripe(cfg.SiteURL),
-	)
+	// PHASE-8 Wave 3: quando PAYMENTS_INTERNAL_URL setado, troca o
+	// PaymentRegistry pelo modo remoto — todo CreateCharge cai no
+	// paymentsclient (HTTP → viralefy_payments). Os providers in-memory
+	// (stripe/woovi/etc) ficam fora do registry; arquivos do package
+	// payment/ continuam no repo (compat com migration legado + tests).
+	var payments *application.PaymentRegistry
+	var paymentsRemote *paymentsclient.Client
+	if cfg.PaymentsInternalURL != "" {
+		paymentsRemote = paymentsclient.New(cfg.PaymentsInternalURL, cfg.InternalSharedSecret)
+		payments = application.NewRemotePaymentRegistry(paymentsRemote)
+		logger.Info("payments: remote viralefy_payments",
+			"url", cfg.PaymentsInternalURL)
+	} else {
+		payments = application.NewPaymentRegistry(
+			payment.NewWoovi(),
+			payment.NewHeleket(),
+			payment.NewManualPIX(),
+			payment.NewManualUSDT(),
+			payment.NewManualCrypto(),
+			payment.NewStripe(cfg.SiteURL),
+		)
+		logger.Info("payments: legacy (providers in-memory)")
+	}
 
 	planSvc := application.NewPlanService(planRepo)
 	currencySvc := application.NewCurrencyService(currencyRepo, planRepo)
@@ -204,6 +236,18 @@ func main() {
 	// signup no UserAuthService.Register).
 	paymentReceiver.SetReferrals(referralSvc)
 	userAuthSvc.SetReferrals(referralSvc)
+
+	// PHASE-8 Wave 3 hook: TelegramNotifier no PaymentReceiver. Quando o
+	// sender remoto está plugado (senderRemote != nil), reaproveitamos como
+	// TelegramNotifier — o senderclient.Client tem SendTelegram(handle,
+	// template, vars). Sem sender remoto, o PaymentReceiver simplesmente
+	// não dispara telegram (modo legacy não tem canal Telegram nativo).
+	if senderRemote != nil {
+		paymentReceiver.SetTelegram(senderRemote, cfg.TelegramAdminChatID)
+		if cfg.TelegramAdminChatID == "" {
+			logger.Warn("telegram admin chat not configured (TELEGRAM_ADMIN_CHAT_ID empty) — só notificação cliente roda")
+		}
+	}
 
 	auditRepo := postgres.NewAuditRepo(db)
 	auditSvc := application.NewAuditService(auditRepo)
@@ -309,6 +353,10 @@ func main() {
 		Storage:         buildStorage(cfg.Storage, logger),
 		AdminTwoFA:      adminTwoFA,
 		UserTwoFA:       userTwoFA,
+		// PHASE-8 Wave 3: quando o paymentsRemote está plugado, a rota
+		// /v1/plans/{id}/payment-methods proxy direto pro microserviço.
+		// Nil = legacy CheckoutService.ListPaymentMethods.
+		MethodsRemote: paymentsRemote,
 	}
 
 	// /ready faz Ping no pool — falha vira 503 (drena tráfego no rolling update).
@@ -322,6 +370,7 @@ func main() {
 		httphandler.AdminAuth(authSvc),
 		httphandler.UserAuth(userAuthSvc),
 		httphandler.OptionalUserAuth(userAuthSvc),
+		cfg.InternalSharedSecret,
 	)
 	addr := cfg.BindHost + ":" + cfg.Port
 	srv := &http.Server{Addr: addr, Handler: router}

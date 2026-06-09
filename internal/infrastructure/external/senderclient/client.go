@@ -104,6 +104,29 @@ func (c *Client) Send(ctx context.Context, msg application.EmailMessage) error {
 	return nil
 }
 
+// SendTemplate satisfaz application.TemplatedEmailer. Dispara um email
+// renderizado pelo sender usando template+vars (em vez de HTML/Text
+// pré-rendered). PHASE-8 Wave 3 introduz a notificação checkout_paid pelo
+// PaymentReceiver — separada do "order created" do checkout pra que cliente
+// receba dois emails distintos no fluxo (criação → confirmação).
+func (c *Client) SendTemplate(ctx context.Context, to, template string, vars map[string]string) error {
+	body := sendRequest{
+		Channel:  channelEmail,
+		Template: template,
+		To:       sendTo{Email: to},
+		Vars:     vars,
+		Priority: "normal",
+	}
+	var out sendResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/internal/v1/send", body, &out); err != nil {
+		return err
+	}
+	if out.Status == "failed" {
+		return fmt.Errorf("senderclient: template send failed (attempt_id=%s)", out.AttemptID)
+	}
+	return nil
+}
+
 // TelegramMessage é o payload pra channel="telegram". Handle pode ser
 // "@user" ou um chat_id numérico — o sender resolve via tabela
 // telegram_chats (PHASE-8 §2). Vars alimenta o template Markdown V2.
@@ -113,11 +136,21 @@ type TelegramMessage struct {
 	Vars     map[string]string // substituições do template
 }
 
-// SendTelegram envia uma mensagem via channel="telegram". NÃO está na
-// application.EmailSender porque o domain do monolito não modela telegram
-// como saída genérica — só o PaymentReceiver vai chamar (Wave 3) pra
-// alerta admin/cliente em paid order.
-func (c *Client) SendTelegram(ctx context.Context, msg TelegramMessage) error {
+// SendTelegram (positional) satisfaz application.TelegramNotifier — o
+// PaymentReceiver chama (handle, template, vars) sem importar este pacote.
+// Assinatura plana evita type alias e o import-cycle senderclient ↔ application.
+func (c *Client) SendTelegram(ctx context.Context, handle, template string, vars map[string]string) error {
+	return c.sendTelegramRaw(ctx, TelegramMessage{Handle: handle, Template: template, Vars: vars})
+}
+
+// SendTelegramMsg é a versão struct-based — mantida pra call sites que já
+// montam TelegramMessage explicitamente (futuro: backoffice manda blast
+// admin). Internamente compartilha sendTelegramRaw.
+func (c *Client) SendTelegramMsg(ctx context.Context, msg TelegramMessage) error {
+	return c.sendTelegramRaw(ctx, msg)
+}
+
+func (c *Client) sendTelegramRaw(ctx context.Context, msg TelegramMessage) error {
 	body := sendRequest{
 		Channel:  channelTelegram,
 		Template: msg.Template,

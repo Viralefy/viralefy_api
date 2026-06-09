@@ -17,6 +17,13 @@ type PaymentChargeInput struct {
 	Currency    string // BRL, USDT, BTC, USD, EUR
 	Customer    PaymentCustomer
 	Config      map[string]string // config do gateway (app_id, api_key, base_url, callback_url, ...)
+
+	// GatewayID/Provider são populados pelos services ao montar a charge
+	// (PHASE-8). Em modo legado in-memory são ignorados (cada adapter já
+	// sabe quem é); em modo microservice o paymentsclient os serializa no
+	// body pra o viralefy_payments resolver qual provider concreto rodar.
+	GatewayID string
+	Provider  string
 }
 
 // PaymentCharge é a resposta normalizada do provider.
@@ -34,8 +41,24 @@ type PaymentProvider interface {
 }
 
 // PaymentRegistry agrega os providers disponíveis, indexados pelo identificador.
+//
+// Modo legado (PHASE-7 e anterior): NewPaymentRegistry(provider1, provider2, …)
+// — cada provider concreto (stripe, woovi, heleket, manual_pix…) vira uma
+// entrada no map. Get(provider) retorna a entrada específica.
+//
+// Modo microservice (PHASE-8 Wave 3): NewRemotePaymentRegistry(client) — o
+// registry encaminha TODA chamada CreateCharge pro paymentsclient. Get(any)
+// retorna o mesmo wrapper remoto independente do gateway pedido — o
+// microserviço resolve qual provider concreto rodar via gateway_id+provider
+// no payload. CheckoutService/InvoiceService não precisam mudar; só o
+// wiring em main.go.
 type PaymentRegistry struct {
 	providers map[string]PaymentProvider
+	// fallback é consultado quando providers[provider] não tem hit. Setado
+	// pelo modo microservice (NewRemotePaymentRegistry) — recebe TODO
+	// CreateCharge porque o microserviço internamente faz o dispatch pelo
+	// gateway. No modo legado fica nil e Get continua estritamente map-only.
+	fallback PaymentProvider
 }
 
 func NewPaymentRegistry(list ...PaymentProvider) *PaymentRegistry {
@@ -46,10 +69,31 @@ func NewPaymentRegistry(list ...PaymentProvider) *PaymentRegistry {
 	return r
 }
 
+// NewRemotePaymentRegistry cria um registry que delega TODA cobrança pro
+// provider remoto (paymentsclient.Client). Não cadastra providers locais —
+// any Get(x) devolve o wrapper remoto. Usado por main.go quando
+// cfg.PaymentsInternalURL != "".
+//
+// Mantemos o tipo PaymentRegistry (mesma struct, novo construtor) pra
+// preservar a assinatura de CheckoutService/InvoiceService — caso contrário
+// teríamos que mexer em 2 services + handlers só pra trocar a fonte do
+// charge.
+func NewRemotePaymentRegistry(remote PaymentProvider) *PaymentRegistry {
+	return &PaymentRegistry{
+		providers: map[string]PaymentProvider{},
+		fallback:  remote,
+	}
+}
+
 func (r *PaymentRegistry) Get(provider string) (PaymentProvider, bool) {
 	if r == nil {
 		return nil, false
 	}
-	p, ok := r.providers[provider]
-	return p, ok
+	if p, ok := r.providers[provider]; ok {
+		return p, true
+	}
+	if r.fallback != nil {
+		return r.fallback, true
+	}
+	return nil, false
 }

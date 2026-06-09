@@ -18,7 +18,7 @@ import (
 // /ready vira liveness simples e devolve 200.
 type ReadyChecker func(r *http.Request) error
 
-func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth, userAuth, optionalUserAuth func(http.Handler) http.Handler) http.Handler {
+func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth, userAuth, optionalUserAuth func(http.Handler) http.Handler, internalToken string) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -248,6 +248,16 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.Use(apiKeyAuth(h.APIKeys))
 		r.Get("/plans", h.PublicV2Plans)
 		r.Get("/orders/{id}/status", h.PublicV2OrderStatus)
+	})
+
+	// /internal/v1/* — callbacks dos microsserviços (PHASE-8 §1). NÃO
+	// expostos via Caddy; bind loopback-only no main.go. X-Internal-Token
+	// é defense-in-depth — qualquer request sem token ou com token errado
+	// vira 401 antes de tocar no handler. Sem userAuth/adminAuth (esses
+	// fazem sentido só pra mundo externo).
+	r.Route("/internal/v1", func(r chi.Router) {
+		r.Use(InternalTokenAuth(internalToken))
+		r.Post("/payment-confirmed", h.InternalPaymentConfirmed)
 	})
 
 	return r
