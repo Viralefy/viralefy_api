@@ -10,6 +10,12 @@ type User struct {
 	Email        string    `json:"email"`
 	Name         string    `json:"name"`
 	Instagram    string    `json:"instagram"`
+	// Phone + Telegram — pelo menos UM é obrigatório no register (migration
+	// 037). Canal de contato pós-pedido quando email cai em spam. Phone
+	// aceita formato livre (E.164 não é forçado — suporte conversa antes
+	// de cobrar formato pro user). Telegram aceita @handle ou link t.me/.
+	Phone        string    `json:"phone,omitempty"`
+	Telegram     string    `json:"telegram,omitempty"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	// TrackingData é o first-touch attribution (utm/fbclid/gclid/referrer/

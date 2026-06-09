@@ -35,6 +35,28 @@ type UserAuthService struct {
 // SetTwoFA pluga o serviço de 2FA pra usuários.
 func (s *UserAuthService) SetTwoFA(t *TwoFAService) { s.twoFA = t }
 
+// normalizeTelegram canonicaliza a entrada do usuário. Aceita:
+//   "@handle"             → "@handle"
+//   "handle"              → "@handle"
+//   "t.me/handle"         → "@handle"
+//   "https://t.me/handle" → "@handle"
+//
+// Mantém prefix "@" pra ficar óbvio no painel admin que é handle, não phone.
+func normalizeTelegram(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimPrefix(raw, "https://")
+	raw = strings.TrimPrefix(raw, "http://")
+	raw = strings.TrimPrefix(raw, "t.me/")
+	raw = strings.TrimPrefix(raw, "telegram.me/")
+	if !strings.HasPrefix(raw, "@") {
+		raw = "@" + raw
+	}
+	return raw
+}
+
 // IsTwoFAEnrolled — consultado pelo front em /v1/me/2fa/status.
 func (s *UserAuthService) IsTwoFAEnrolled(ctx context.Context, userID string) bool {
 	if s.twoFA == nil {
@@ -70,6 +92,11 @@ type RegisterInput struct {
 	Email    string
 	Name     string
 	Password string
+	// Phone + Telegram — canal alternativo de contato. Pelo menos UM é
+	// obrigatório (validado em Register). Phone aceita formato livre;
+	// Telegram aceita @handle ou link t.me/.
+	Phone    string
+	Telegram string
 	// Tracking first-touch (utm/fbclid/referrer/landing_url enriquecido com
 	// IP+UA server-side). Persistido em users.tracking_data.
 	Tracking map[string]any
@@ -92,11 +119,21 @@ type UserView struct {
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 	Instagram string `json:"instagram"`
+	Phone     string `json:"phone,omitempty"`
+	Telegram  string `json:"telegram,omitempty"`
 }
 
 func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*UserSession, error) {
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
+	in.Phone = strings.TrimSpace(in.Phone)
+	in.Telegram = strings.TrimSpace(in.Telegram)
 	if in.Email == "" || in.Name == "" || len(in.Password) < 8 {
+		return nil, domain.ErrInvalidInput
+	}
+	// Pelo menos um canal alternativo. Phone OU Telegram — slash no nome
+	// do campo indica "qualquer um dos dois". Suporte usa esse canal pra
+	// contornar email em spam, reduzir refund por "nunca fui notificado".
+	if in.Phone == "" && in.Telegram == "" {
 		return nil, domain.ErrInvalidInput
 	}
 	if existing, _ := s.users.GetByEmail(ctx, in.Email); existing != nil {
@@ -111,6 +148,8 @@ func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*User
 		Email:        in.Email,
 		Name:         in.Name,
 		Instagram:    "", // legado — perfis ficam em /v1/me/profiles agora
+		Phone:        in.Phone,
+		Telegram:     normalizeTelegram(in.Telegram),
 		PasswordHash: string(hash),
 		TrackingData: in.Tracking,
 	}
@@ -144,7 +183,7 @@ func (s *UserAuthService) Login(ctx context.Context, email, password string) (*U
 			return nil, err
 		}
 		return &UserSession{
-			User:          UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram},
+			User:          UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram, Phone: u.Phone, Telegram: u.Telegram},
 			TwoFARequired: true,
 			PartialToken:  partial,
 		}, nil
@@ -255,7 +294,7 @@ func (s *UserAuthService) session(u domain.User) (*UserSession, error) {
 	return &UserSession{
 		Token:     signed,
 		ExpiresAt: exp,
-		User:      UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram},
+		User:      UserView{ID: u.ID, Email: u.Email, Name: u.Name, Instagram: u.Instagram, Phone: u.Phone, Telegram: u.Telegram},
 	}, nil
 }
 

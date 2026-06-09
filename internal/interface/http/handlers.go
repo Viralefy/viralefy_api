@@ -280,6 +280,8 @@ func (h *Handlers) UserRegister(w http.ResponseWriter, r *http.Request) {
 		Email          string         `json:"email"`
 		Name           string         `json:"name"`
 		Password       string         `json:"password"`
+		Phone          string         `json:"phone,omitempty"`
+		Telegram       string         `json:"telegram,omitempty"`
 		TurnstileToken string         `json:"turnstile_token"`
 		Tracking       map[string]any `json:"tracking,omitempty"`
 	}
@@ -292,7 +294,11 @@ func (h *Handlers) UserRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.UserAuth.Register(r.Context(), application.RegisterInput{
-		Email: body.Email, Name: body.Name, Password: body.Password,
+		Email:    body.Email,
+		Name:     body.Name,
+		Password: body.Password,
+		Phone:    body.Phone,
+		Telegram: body.Telegram,
 		Tracking: h.enrichTracking(r, body.Tracking),
 	})
 	if err != nil {
