@@ -55,6 +55,21 @@ type Config struct {
 	// rest. Hex 64 chars OU base64 44 chars. Vazio = 2FA disabled (handlers
 	// retornam 503). Instalador gera + persiste em /etc/viralefy/.env.
 	TwoFAEncryptionKey []byte
+
+	// Microservices (PHASE-8). Loopback-only; o monolito é o único
+	// cliente. Vazio = wiring fica em modo legado (in-memory providers /
+	// SMTP/Resend direto), sem trocar o registry — Wave 3 ainda não rodou.
+	//
+	//   PaymentsInternalURL  — base URL do viralefy_payments
+	//                          (ex.: http://127.0.0.1:8081). Sem trailing /.
+	//   SenderInternalURL    — base URL do viralefy_sender
+	//                          (ex.: http://127.0.0.1:8082).
+	//   InternalSharedSecret — token em X-Internal-Token entre services.
+	//                          Gerado pelo installer e propagado pros 3
+	//                          systemd units via /etc/viralefy/.env.
+	PaymentsInternalURL  string
+	SenderInternalURL    string
+	InternalSharedSecret string
 }
 
 type StorageConfig struct {
@@ -104,6 +119,10 @@ func Load() (Config, error) {
 
 		TurnstileSecretKey: getenv("TURNSTILE_SECRET_KEY", ""),
 		AdminWebhookURL:    getenv("ADMIN_WEBHOOK_URL", ""),
+
+		PaymentsInternalURL:  strings.TrimRight(getenv("PAYMENTS_INTERNAL_URL", ""), "/"),
+		SenderInternalURL:    strings.TrimRight(getenv("SENDER_INTERNAL_URL", ""), "/"),
+		InternalSharedSecret: getenv("INTERNAL_SHARED_SECRET", ""),
 
 		Storage: StorageConfig{
 			Endpoint:     strings.TrimPrefix(strings.TrimPrefix(getenv("STORAGE_ENDPOINT", ""), "https://"), "http://"),
