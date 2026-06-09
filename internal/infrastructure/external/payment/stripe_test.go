@@ -170,3 +170,41 @@ func TestVerifyStripeWebhook_ConstantTimeCompare_correctSigStillMatches(t *testi
 		t.Fatalf("expected ok, got %v", err)
 	}
 }
+
+func TestValidateStripeKey_AcceptsSecretAndRestricted(t *testing.T) {
+	for _, k := range []string{
+		"sk_live_abc",
+		"sk_test_abc",
+		"rk_live_abc",
+		"rk_test_abc",
+	} {
+		if err := validateStripeKey(k); err != nil {
+			t.Fatalf("expected ok for %q, got %v", k, err)
+		}
+	}
+}
+
+func TestValidateStripeKey_RejectsPublishable(t *testing.T) {
+	err := validateStripeKey("pk_live_abc")
+	if err == nil {
+		t.Fatal("publishable key should be rejected")
+	}
+	if !strings.Contains(err.Error(), "publishable") {
+		t.Fatalf("error should mention publishable, got %v", err)
+	}
+}
+
+func TestValidateStripeKey_RejectsEmpty(t *testing.T) {
+	if err := validateStripeKey(""); err == nil {
+		t.Fatal("empty key should be rejected")
+	}
+}
+
+func TestValidateStripeKey_RejectsUnknownPrefix(t *testing.T) {
+	if err := validateStripeKey("whsec_xyz"); err == nil {
+		t.Fatal("webhook secret should be rejected when used as API key")
+	}
+	if err := validateStripeKey("garbage"); err == nil {
+		t.Fatal("garbage prefix should be rejected")
+	}
+}

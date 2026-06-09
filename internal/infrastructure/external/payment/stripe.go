@@ -22,14 +22,23 @@ import (
 // stripe-go bate em 100+ deps; aqui chamamos a REST API direto.
 //
 // Config esperado:
-//   secret_key   — sk_live_... (obrigatório)
+//   secret_key   — sk_live_… (full secret) OU rk_live_… (restricted, recomendado)
+//                  Test keys (sk_test_/rk_test_) também aceitas pra HML.
+//                  PUBLISHABLE key (pk_…) é rejeitada — credential errada,
+//                  vaza pro browser e não autoriza Checkout Sessions.
 //   success_url  — opcional, default {siteURL}/account/orders/{order_id}
 //   cancel_url   — opcional, default {siteURL}/checkout/cancelled
 //   payment_method_types — opcional, default "card" (CSV: card,link,...)
 //
-// Webhook signature check + auto mark-as-paid ficam separados (próximo
-// commit). Por ora o cliente paga via Stripe, retorna ao success_url e o
-// PaymentReceiver é acionado manualmente — exatamente como manual_pix.
+// Restricted key (rk_live_…) é o caminho preferido em produção. Quando
+// criar no dashboard da Stripe (Developers > API Keys > Create restricted
+// key), conceda EXATAMENTE estas permissões — qualquer faltante quebra:
+//
+//   Checkout Sessions       Write
+//   Prices                  Write   (price_data inline em line_items)
+//   Products                Write   (product_data inline em line_items)
+//
+// Webhook signature usa webhook_secret separado (whsec_…), não a API key.
 type Stripe struct {
 	client  *http.Client
 	siteURL string
@@ -44,10 +53,30 @@ func NewStripe(siteURL string) *Stripe {
 
 func (*Stripe) Provider() string { return "stripe" }
 
+// stripeKeyPrefixes aceita os 4 formatos válidos. pk_ (publishable) é
+// PROIBIDO — é a key do front, vaza no bundle e não autoriza Checkout.
+// Outros prefixos comuns que NÃO funcionam: whsec_ (webhook), price_, prod_.
+var stripeKeyPrefixes = []string{"sk_live_", "sk_test_", "rk_live_", "rk_test_"}
+
+func validateStripeKey(secret string) error {
+	if secret == "" {
+		return fmt.Errorf("stripe: missing secret_key in config (use sk_live_… or rk_live_…)")
+	}
+	if strings.HasPrefix(secret, "pk_") {
+		return fmt.Errorf("stripe: publishable key (pk_…) provided as secret_key — use a secret (sk_…) or restricted (rk_…) key from Developers > API Keys")
+	}
+	for _, p := range stripeKeyPrefixes {
+		if strings.HasPrefix(secret, p) {
+			return nil
+		}
+	}
+	return fmt.Errorf("stripe: secret_key has unrecognized prefix — expected one of sk_live_/sk_test_/rk_live_/rk_test_")
+}
+
 func (s *Stripe) CreateCharge(ctx context.Context, in application.PaymentChargeInput) (application.PaymentCharge, error) {
 	secret := strings.TrimSpace(in.Config["secret_key"])
-	if secret == "" {
-		return application.PaymentCharge{}, fmt.Errorf("stripe: missing secret_key in config")
+	if err := validateStripeKey(secret); err != nil {
+		return application.PaymentCharge{}, err
 	}
 
 	successURL := strings.TrimSpace(in.Config["success_url"])
